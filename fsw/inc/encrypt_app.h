@@ -10,9 +10,7 @@
 #include "cfe_sb.h"
 #include "cfe_es.h"
 #include "cfe_msg.h"
-
-#include <string.h>
-#include <gcrypt.h>
+#include "cfe_time.h"
 
 /*
 ** ENCRYPT App Macro Definitions
@@ -20,12 +18,31 @@
 #define ENCRYPT_APP_PIPE_DEPTH     32
 #define ENCRYPT_APP_PIPE_NAME      "ENCRYPT_APP_PIPE"
 
-/* Default Message IDs for commands and telemetry */
-#define ENCRYPT_APP_CMD_MID            CFE_MISSION_CMD_MID_BASE + 0x12  /* 0x1812 */
-#define ENCRYPT_APP_SEND_HK_MID        CFE_MISSION_CMD_MID_BASE + 0x13  /* 0x1813 */
-#define ENCRYPT_APP_ENCRYPTED_MID      CFE_MISSION_CMD_MID_BASE + 0x14  /* 0x1814 */
-#define ENCRYPT_APP_KEY_ROT_MID        CFE_MISSION_CMD_MID_BASE + 0x15  /* 0x1815 */
-#define ENCRYPT_APP_HK_TLM_MID         CFE_MISSION_TLM_MID_BASE + 0x12  /* 0x0812 */
+/* Default Message IDs - make sure these match your deployment */
+#define ENCRYPT_APP_CMD_MID        0x1882
+#define ENCRYPT_APP_SEND_HK_MID    0x1883 
+#define ENCRYPT_APP_ENCRYPTED_MID  0x1884
+#define ENCRYPT_APP_KEY_ROT_MID    0x1885
+#define ENCRYPT_APP_HK_TLM_MID     0x0882
+
+/* Command codes */
+#define ENCRYPT_APP_NOOP_CC        0
+#define ENCRYPT_APP_RESET_CC       1
+
+/* Event IDs */
+#define ENCRYPT_APP_RESERVED_EID              0
+#define ENCRYPT_APP_STARTUP_INF_EID           1
+#define ENCRYPT_APP_COMMAND_ERR_EID           2
+#define ENCRYPT_APP_COMMANDNOP_INF_EID        3
+#define ENCRYPT_APP_COMMANDRST_INF_EID        4
+#define ENCRYPT_APP_DECRYPT_SUCCESS_EID       5
+#define ENCRYPT_APP_DECRYPT_ERR_EID           6
+#define ENCRYPT_APP_KEY_ROTATION_SUCCESS_EID  7
+#define ENCRYPT_APP_KEY_ROTATION_ERR_EID      8
+#define ENCRYPT_APP_CRYPTO_INIT_ERR_EID       9
+#define ENCRYPT_APP_PIPE_ERR_EID             10
+#define ENCRYPT_APP_SUB_ERR_EID              11
+#define ENCRYPT_APP_PERF_ID                  40
 
 /*
 ** Type definitions
@@ -48,7 +65,7 @@ typedef struct
     uint32  CommandErrorCounter;
     
     /* Housekeeping telemetry */
-    uint8   HkTlm[sizeof(CFE_SB_Buffer_t)];
+    CFE_MSG_Message_t HkTlm;
     
     /* RSA Keys */
     gcry_sexp_t  RSAPrivateKey;

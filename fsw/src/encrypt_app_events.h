@@ -18,6 +18,5 @@
 #define ENCRYPT_APP_CRYPTO_INIT_ERR_EID       9  /* Crypto Initialization Error */
 #define ENCRYPT_APP_PIPE_ERR_EID             10  /* Command Pipe Error */
 #define ENCRYPT_APP_SUB_ERR_EID              11  /* Subscription Error */
-#define ENCRYPT_APP_PERF_ID                  40  /* Performance ID */
 
 #endif /* ENCRYPT_APP_EVENTS_H */

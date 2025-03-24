@@ -28,7 +28,16 @@ void ENCRYPT_APP_Main(void)
     CFE_SB_Buffer_t *SBBufPtr;
 
     /* Register the app with Executive Services */
-    CFE_ES_RegisterApp();
+    CFE_ES_Main_t MainParams;
+    memset(&MainParams, 0, sizeof(MainParams));
+    
+    status = CFE_ES_RegisterApp(&MainParams);
+
+    if (status != CFE_SUCCESS)
+    {
+        CFE_ES_WriteToSysLog("ENCRYPT_APP: Error registering app: 0x%08X\n", (unsigned int)status);
+        return;
+    }
 
     /* Initialize the application */
     status = ENCRYPT_APP_Init();
@@ -40,10 +49,6 @@ void ENCRYPT_APP_Main(void)
     }
     else
     {
-        /* Do not perform performance monitoring on this app */
-        CFE_ES_PerfLogEntry(ENCRYPT_APP_PERF_ID);
-        CFE_ES_PerfLogExit(ENCRYPT_APP_PERF_ID);
-
         /* Application main loop */
         while (CFE_ES_RunLoop(&ENCRYPT_APP_Data.RunStatus) == true)
         {
@@ -276,16 +281,18 @@ void ENCRYPT_APP_ProcessCommandPacket(CFE_SB_Buffer_t *BufPtr)
         CFE_MSG_GetSize(&BufPtr->Msg, &MsgSize);
         
         /* Get the message payload */
-        ENCRYPT_Message_t *EncMsg = (ENCRYPT_Message_t *)CFE_SB_GetUserData(&BufPtr->Msg);
+        uint16_t UserDataSize = 0;
+        uint8_t *UserData = CFE_SB_GetUserData(&BufPtr->Msg);
+        CFE_MSG_GetUserDataLength(&BufPtr->Msg, &UserDataSize);
         
         /* Determine payload size */
-        size_t PayloadSize = MsgSize - CFE_SB_GetUserDataOffset(&BufPtr->Msg);
+        size_t PayloadSize = UserDataSize;
         
         /* Decrypt the message */
         unsigned char DecryptedMsg[256];
         memset(DecryptedMsg, 0, sizeof(DecryptedMsg));
         
-        if (ENCRYPT_APP_DecryptMessage(EncMsg->Payload, PayloadSize, DecryptedMsg) == 0)
+        if (ENCRYPT_APP_DecryptMessage(UserData, PayloadSize, DecryptedMsg) == 0)
         {
             CFE_EVS_SendEvent(ENCRYPT_APP_DECRYPT_SUCCESS_EID, CFE_EVS_EventType_INFORMATION,
                              "ENCRYPT_APP: Successfully decrypted message: %s", DecryptedMsg);
@@ -305,12 +312,14 @@ void ENCRYPT_APP_ProcessCommandPacket(CFE_SB_Buffer_t *BufPtr)
         CFE_MSG_GetSize(&BufPtr->Msg, &MsgSize);
         
         /* Get the message payload */
-        ENCRYPT_KeyRotation_t *KeyRotMsg = (ENCRYPT_KeyRotation_t *)CFE_SB_GetUserData(&BufPtr->Msg);
+        uint16_t UserDataSize = 0;
+        uint8_t *UserData = CFE_SB_GetUserData(&BufPtr->Msg);
+        CFE_MSG_GetUserDataLength(&BufPtr->Msg, &UserDataSize);
         
         /* Determine payload size */
-        size_t PayloadSize = MsgSize - CFE_SB_GetUserDataOffset(&BufPtr->Msg);
+        size_t PayloadSize = UserDataSize;
         
-        if (ENCRYPT_APP_ProcessKeyRotation(KeyRotMsg->EncryptedKey, PayloadSize) == 0)
+        if (ENCRYPT_APP_ProcessKeyRotation(UserData, PayloadSize) == 0)
         {
             CFE_EVS_SendEvent(ENCRYPT_APP_KEY_ROTATION_SUCCESS_EID, CFE_EVS_EventType_INFORMATION,
                              "ENCRYPT_APP: Key rotation successful");
@@ -338,17 +347,18 @@ void ENCRYPT_APP_ProcessCommandPacket(CFE_SB_Buffer_t *BufPtr)
 void ENCRYPT_APP_ReportHousekeeping(void)
 {
     /* Get current time */
-    CFE_TIME_SysTime_t CurrentTime = CFE_TIME_GetTime();
+    CFE_TIME_SysTime_t CurrentTime;
+    CurrentTime = CFE_TIME_GetTime();
     
     /* Initialize housekeeping message */
-    CFE_MSG_Init(CFE_MSG_PTR(ENCRYPT_APP_Data.HkTlm), CFE_SB_ValueToMsgId(ENCRYPT_APP_HK_TLM_MID), sizeof(ENCRYPT_APP_Data.HkTlm));
+    CFE_MSG_Init(&ENCRYPT_APP_Data.HkTlm, CFE_SB_ValueToMsgId(ENCRYPT_APP_HK_TLM_MID), sizeof(ENCRYPT_APP_Data.HkTlm));
     
     /* Set timestamp */
-    CFE_MSG_SetMsgTime(CFE_MSG_PTR(ENCRYPT_APP_Data.HkTlm), CurrentTime);
+    CFE_MSG_SetMsgTime(&ENCRYPT_APP_Data.HkTlm, CurrentTime);
     
     /* Copy relevant HK data to the packet (assumes correct structure) */
     /* For now, we'll include these directly in the packet */
-    uint8 *HkTlmPayload = CFE_SB_GetUserData((CFE_MSG_Message_t *)ENCRYPT_APP_Data.HkTlm);
+    uint8 *HkTlmPayload = CFE_SB_GetUserData(&ENCRYPT_APP_Data.HkTlm);
     if (HkTlmPayload != NULL)
     {
         /* Copy counters to HK packet */
@@ -359,7 +369,7 @@ void ENCRYPT_APP_ReportHousekeeping(void)
     }
     
     /* Send the housekeeping packet */
-    CFE_SB_TransmitMsg(CFE_MSG_PTR(ENCRYPT_APP_Data.HkTlm), true);
+    CFE_SB_TransmitMsg(&ENCRYPT_APP_Data.HkTlm, true);
 }
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
