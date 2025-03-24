@@ -1,4 +1,3 @@
-main.c
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -376,8 +375,27 @@ int GroundStation_GenerateOrLoadKeys(void) {
     gcry_sexp_t public_key_part = gcry_sexp_find_token(GroundStation.RSAPrivateKey, "public-key", 0);
     if (public_key_part) {
         /* If there's a public-key token, use it directly */
-        GroundStation.RSAPublicKey = gcry_sexp_copy(public_key_part);
+        /* Get the string representation of the S-expression */
+        size_t buf_size = gcry_sexp_sprint(public_key_part, GCRYSEXP_FMT_CANON, NULL, 0);
+        char *buf = malloc(buf_size);
+        if (!buf) {
+            fprintf(stderr, "Memory allocation failed\n");
+            gcry_sexp_release(public_key_part);
+            return -1;
+        }
+
+        gcry_sexp_sprint(public_key_part, GCRYSEXP_FMT_CANON, buf, buf_size);
         gcry_sexp_release(public_key_part);
+
+        /* Create a new S-expression from the string */
+        gcry_error_t err = gcry_sexp_sscan(&GroundStation.RSAPublicKey, NULL, buf, buf_size);
+        free(buf);
+
+        if (err) {
+            fprintf(stderr, "Failed to recreate public key: %s/%s\n",
+                   gcry_strsource(err), gcry_strerror(err));
+            return -1;
+        }
     } else {
         /* Extract n and e components and build public key */
         gcry_sexp_t rsa = gcry_sexp_find_token(GroundStation.RSAPrivateKey, "rsa", 0);
