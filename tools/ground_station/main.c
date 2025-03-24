@@ -55,9 +55,13 @@ typedef struct {
 GroundStation_t GroundStation;
 
 /* RSA public key in S-expression format */
-const char *RSA_PUBLIC_KEY = 
-    "(public-key (rsa (n #00BA65A53C3A3C02A87679B5F86A9BE4E5AB38475709E8784B0F2C3C573219E609AACB0C6D5F550879AA1AA80961C48AB663930F6FAAD5F1860E39A7B1A58A543#)"
-    "(e #010001#)))";
+   const char *RSA_PUBLIC_KEY = 
+   "(public-key\n"
+   " (rsa\n"
+   "  (n #00BA65A53C3A3C02A87679B5F86A9BE4E5AB38475709E8784B0F2C3C573219E609AACB0C6D5F550879AA1AA80961C48AB663930F6FAAD5F1860E39A7B1A58A543#)\n"
+   "  (e #010001#)\n"
+   " )\n"
+   ")";
 
 /* Function prototypes */
 int GroundStation_InitCrypto(void);
