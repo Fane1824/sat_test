@@ -6,11 +6,6 @@
 #include "encrypt_app_version.h"
 #include <string.h>
 #include <gcrypt.h>
-#include <unistd.h>
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <fcntl.h>
 
 /*
 ** Global Data
@@ -25,6 +20,10 @@ const char *RSA_PRIVATE_KEY =
     "(p #00D2B037CB00F9B13FE4B4B3B571C95891BA2AE79F27E19F54D758B2F605F07B#)"
     "(q #00E13B2F0E41EB0079940C973D3D92F2AC0A64A9EF3507C73D5AF8D39C7F5557#)"
     "(u #7764D724705A5BB528446AB9C428CE693C1C77E8CFEF78C487CE0B9C96B17513#))";
+
+/* Convert these command message IDs to their telemetry counterparts for TO_LAB */
+#define ENCRYPT_APP_ENCRYPTED_TLM_MID 0x0884  /* Telemetry version of ENCRYPT_APP_ENCRYPTED_MID */
+#define ENCRYPT_APP_KEY_ROT_TLM_MID   0x0885  /* Telemetry version of ENCRYPT_APP_KEY_ROT_MID */
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 /* ENCRYPT_APP_Main() -- Application entry point and main process loop      */
@@ -47,28 +46,20 @@ void ENCRYPT_APP_Main(void)
         /* Application main loop */
         while (CFE_ES_RunLoop(&ENCRYPT_APP_Data.RunStatus) == true)
         {
-            /* Check for UDP messages */
-            ENCRYPT_APP_CheckUdpMessages();
-            
-            /* Pend on receipt of command packet with timeout */
-            status = CFE_SB_ReceiveBuffer(&SBBufPtr, ENCRYPT_APP_Data.CommandPipe, 100); /* 100ms timeout */
-            
+            /* Pend on receipt of command packet */
+            status = CFE_SB_ReceiveBuffer(&SBBufPtr, ENCRYPT_APP_Data.CommandPipe, CFE_SB_PEND_FOREVER);
+
             if (status == CFE_SUCCESS)
             {
                 /* Process received command packet */
                 ENCRYPT_APP_ProcessCommandPacket(SBBufPtr);
             }
-            else if (status != CFE_SB_TIME_OUT)
+            else
             {
                 CFE_EVS_SendEvent(ENCRYPT_APP_PIPE_ERR_EID, CFE_EVS_EventType_ERROR,
-                                 "ENCRYPT_APP: SB ReceiveBuffer error (0x%08X)", (unsigned int)status);
+                                "ENCRYPT_APP: SB ReceiveBuffer error (0x%08X)", (unsigned int)status);
             }
         }
-    }
-
-    /* Close UDP socket before exiting */
-    if (ENCRYPT_APP_Data.UdpSocket >= 0) {
-        close(ENCRYPT_APP_Data.UdpSocket);
     }
 
     /* Exit the application */
@@ -175,6 +166,24 @@ CFE_Status_t ENCRYPT_APP_Init(void)
         return status;
     }
 
+    /* Subscribe to encrypted message via TO_LAB (telemetry) */
+    status = CFE_SB_Subscribe(CFE_SB_ValueToMsgId(ENCRYPT_APP_ENCRYPTED_TLM_MID), ENCRYPT_APP_Data.CommandPipe);
+    if (status != CFE_SUCCESS)
+    {
+        CFE_EVS_SendEvent(ENCRYPT_APP_SUB_ERR_EID, CFE_EVS_EventType_ERROR,
+                         "ENCRYPT_APP: Error subscribing to encrypted tlm: 0x%08X", (unsigned int)status);
+        return status;
+    }
+
+    /* Subscribe to key rotation message via TO_LAB (telemetry) */
+    status = CFE_SB_Subscribe(CFE_SB_ValueToMsgId(ENCRYPT_APP_KEY_ROT_TLM_MID), ENCRYPT_APP_Data.CommandPipe);
+    if (status != CFE_SUCCESS)
+    {
+        CFE_EVS_SendEvent(ENCRYPT_APP_SUB_ERR_EID, CFE_EVS_EventType_ERROR,
+                         "ENCRYPT_APP: Error subscribing to key rotation tlm: 0x%08X", (unsigned int)status);
+        return status;
+    }
+
     /* Initialize AES key (example initial key) */
     unsigned char initialKey[32] = {
         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 
@@ -185,38 +194,6 @@ CFE_Status_t ENCRYPT_APP_Init(void)
     
     memcpy(ENCRYPT_APP_Data.AESKey, initialKey, 32);
     ENCRYPT_APP_Data.AESKeyLen = 32;
-
-    /* Set up UDP socket for direct communication */
-    ENCRYPT_APP_Data.UdpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (ENCRYPT_APP_Data.UdpSocket < 0) {
-        OS_printf("ENCRYPT_APP: Failed to create UDP socket\n");
-        CFE_EVS_SendEvent(ENCRYPT_APP_CRYPTO_INIT_ERR_EID, CFE_EVS_EventType_ERROR,
-                         "ENCRYPT_APP: Failed to create UDP socket");
-        return CFE_STATUS_EXTERNAL_RESOURCE_FAIL;
-    }
-    
-    /* Set socket to non-blocking */
-    int flags = fcntl(ENCRYPT_APP_Data.UdpSocket, F_GETFL, 0);
-    fcntl(ENCRYPT_APP_Data.UdpSocket, F_SETFL, flags | O_NONBLOCK);
-    
-    /* Set up UDP address */
-    memset(&ENCRYPT_APP_Data.UdpAddr, 0, sizeof(ENCRYPT_APP_Data.UdpAddr));
-    ENCRYPT_APP_Data.UdpAddr.sin_family = AF_INET;
-    ENCRYPT_APP_Data.UdpAddr.sin_addr.s_addr = htonl(INADDR_ANY);
-    ENCRYPT_APP_Data.UdpAddr.sin_port = htons(1236);  /* Listen on port 1236 */
-    
-    /* Bind socket to address */
-    if (bind(ENCRYPT_APP_Data.UdpSocket, 
-            (struct sockaddr*)&ENCRYPT_APP_Data.UdpAddr, 
-            sizeof(ENCRYPT_APP_Data.UdpAddr)) < 0) {
-        OS_printf("ENCRYPT_APP: Failed to bind UDP socket\n");
-        CFE_EVS_SendEvent(ENCRYPT_APP_CRYPTO_INIT_ERR_EID, CFE_EVS_EventType_ERROR,
-                         "ENCRYPT_APP: Failed to bind UDP socket");
-        close(ENCRYPT_APP_Data.UdpSocket);
-        return CFE_STATUS_EXTERNAL_RESOURCE_FAIL;
-    }
-    
-    OS_printf("ENCRYPT_APP: UDP socket listening on port 1236\n");
 
     /* Application startup event message */
     CFE_EVS_SendEvent(ENCRYPT_APP_STARTUP_INF_EID, CFE_EVS_EventType_INFORMATION,
@@ -232,6 +209,8 @@ CFE_Status_t ENCRYPT_APP_Init(void)
     OS_printf("  SEND_HK MID:    0x%04X\n", (unsigned int)CFE_SB_MsgIdToValue(CFE_SB_ValueToMsgId(ENCRYPT_APP_SEND_HK_MID)));
     OS_printf("  ENCRYPTED MID:  0x%04X\n", (unsigned int)CFE_SB_MsgIdToValue(CFE_SB_ValueToMsgId(ENCRYPT_APP_ENCRYPTED_MID)));
     OS_printf("  KEY_ROT MID:    0x%04X\n", (unsigned int)CFE_SB_MsgIdToValue(CFE_SB_ValueToMsgId(ENCRYPT_APP_KEY_ROT_MID)));
+    OS_printf("  ENCRYPTED TLM:  0x%04X\n", (unsigned int)CFE_SB_MsgIdToValue(CFE_SB_ValueToMsgId(ENCRYPT_APP_ENCRYPTED_TLM_MID)));
+    OS_printf("  KEY_ROT TLM:    0x%04X\n", (unsigned int)CFE_SB_MsgIdToValue(CFE_SB_ValueToMsgId(ENCRYPT_APP_KEY_ROT_TLM_MID)));
 
     return CFE_SUCCESS;
 }
@@ -319,9 +298,10 @@ void ENCRYPT_APP_ProcessCommandPacket(CFE_SB_Buffer_t *BufPtr)
         /* Send housekeeping telemetry */
         ENCRYPT_APP_ReportHousekeeping();
     }
-    else if (CFE_SB_MsgId_Equal(MsgId, CFE_SB_ValueToMsgId(ENCRYPT_APP_ENCRYPTED_MID)))
+    else if (CFE_SB_MsgId_Equal(MsgId, CFE_SB_ValueToMsgId(ENCRYPT_APP_ENCRYPTED_MID)) ||
+             CFE_SB_MsgId_Equal(MsgId, CFE_SB_ValueToMsgId(ENCRYPT_APP_ENCRYPTED_TLM_MID)))
     {
-        /* Process encrypted message */
+        /* Process encrypted message - handle both command and telemetry versions */
         CFE_MSG_Size_t MsgSize = 0;
         CFE_MSG_GetSize(&BufPtr->Msg, &MsgSize);
         
@@ -349,9 +329,10 @@ void ENCRYPT_APP_ProcessCommandPacket(CFE_SB_Buffer_t *BufPtr)
                              "ENCRYPT_APP: Failed to decrypt message");
         }
     }
-    else if (CFE_SB_MsgId_Equal(MsgId, CFE_SB_ValueToMsgId(ENCRYPT_APP_KEY_ROT_MID)))
+    else if (CFE_SB_MsgId_Equal(MsgId, CFE_SB_ValueToMsgId(ENCRYPT_APP_KEY_ROT_MID)) ||
+             CFE_SB_MsgId_Equal(MsgId, CFE_SB_ValueToMsgId(ENCRYPT_APP_KEY_ROT_TLM_MID)))
     {
-        /* Process key rotation message */
+        /* Process key rotation message - handle both command and telemetry versions */
         CFE_MSG_Size_t MsgSize = 0;
         CFE_MSG_GetSize(&BufPtr->Msg, &MsgSize);
         
@@ -527,62 +508,4 @@ int ENCRYPT_APP_ProcessKeyRotation(const unsigned char *encrypted_key, size_t ke
     free(new_key);
     
     return 0;
-}
-
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
-/* ENCRYPT_APP_CheckUdpMessages -- Check for UDP messages                    */
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
-void ENCRYPT_APP_CheckUdpMessages(void)
-{
-    struct sockaddr_in sender_addr;
-    socklen_t sender_len = sizeof(sender_addr);
-    unsigned char buffer[2048];
-    int nbytes;
-    
-    /* Check if there's data on the UDP socket */
-    nbytes = recvfrom(ENCRYPT_APP_Data.UdpSocket, buffer, sizeof(buffer), 0,
-                     (struct sockaddr*)&sender_addr, &sender_len);
-    
-    if (nbytes > 0) {
-        OS_printf("ENCRYPT_APP: Received %d bytes via UDP\n", nbytes);
-        
-        /* Extract CCSDS header */
-        if (nbytes >= 6) {
-            uint16_t app_id = (buffer[0] & 0x07) << 8 | buffer[1];
-            uint16_t length = (buffer[4] << 8) | buffer[5];
-            
-            OS_printf("ENCRYPT_APP: UDP packet with App ID: 0x%04X, Length: %d\n", app_id, length);
-            
-            if (app_id == 0x184) { /* ENCRYPT_APP_ENCRYPTED_MID */
-                /* Encrypted message */
-                unsigned char plaintext[2048] = {0};
-                if (ENCRYPT_APP_DecryptMessage(buffer + 6, nbytes - 6, plaintext) == 0) {
-                    OS_printf("ENCRYPT_APP (UDP): Decrypted message: %s\n", plaintext);
-                    CFE_EVS_SendEvent(ENCRYPT_APP_DECRYPT_SUCCESS_EID, 
-                                     CFE_EVS_EventType_INFORMATION,
-                                     "ENCRYPT_APP: Successfully decrypted UDP message: %s", 
-                                     plaintext);
-                    ENCRYPT_APP_Data.MsgCounter++;
-                } else {
-                    CFE_EVS_SendEvent(ENCRYPT_APP_DECRYPT_ERR_EID, 
-                                     CFE_EVS_EventType_ERROR,
-                                     "ENCRYPT_APP: Failed to decrypt UDP message");
-                }
-            }
-            else if (app_id == 0x185) { /* ENCRYPT_APP_KEY_ROT_MID */
-                /* Key rotation */
-                if (ENCRYPT_APP_ProcessKeyRotation(buffer + 6, nbytes - 6) == 0) {
-                    OS_printf("ENCRYPT_APP (UDP): Key rotation successful\n");
-                    CFE_EVS_SendEvent(ENCRYPT_APP_KEY_ROTATION_SUCCESS_EID, 
-                                     CFE_EVS_EventType_INFORMATION,
-                                     "ENCRYPT_APP: UDP Key rotation successful");
-                    ENCRYPT_APP_Data.KeyRotationCounter++;
-                } else {
-                    CFE_EVS_SendEvent(ENCRYPT_APP_KEY_ROTATION_ERR_EID, 
-                                     CFE_EVS_EventType_ERROR,
-                                     "ENCRYPT_APP: UDP Key rotation failed");
-                }
-            }
-        }
-    }
 }
