@@ -544,7 +544,27 @@ void ENCRYPT_APP_CheckUdpMessages(void)
                      (struct sockaddr*)&sender_addr, &sender_len);
     
     if (nbytes > 0) {
-        OS_printf("ENCRYPT_APP: Received %d bytes via UDP\n", nbytes);
+        OS_printf("\n****************************************\n");
+        OS_printf("ENCRYPT_APP: Received %d bytes via UDP from %s:%d\n", 
+                nbytes, 
+                inet_ntoa(sender_addr.sin_addr),
+                ntohs(sender_addr.sin_port));
+
+            /* Print as hex */
+        OS_printf("Data (hex):\n");
+        for (int i = 0; i < nbytes && i < 48; i++) {
+            OS_printf("%02X ", buffer[i]);
+            if ((i + 1) % 16 == 0) OS_printf("\n");
+        }
+        OS_printf("\n");
+
+        if (nbytes < 32) {
+            char ascii_buf[33] = {0};
+            memcpy(ascii_buf, buffer, nbytes < 32 ? nbytes : 32);
+            OS_printf("Data (ASCII): \"%s\"\n", ascii_buf);
+        }
+        
+        OS_printf("****************************************\n\n");
         
         /* Extract CCSDS header */
         if (nbytes >= 6) {
