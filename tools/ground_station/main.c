@@ -67,6 +67,21 @@ void GroundStation_SendKeyRotation(void);
 void GroundStation_Run(void);
 void handle_signal(int signal);
 
+void GroundStation_SendUdpPing(void) {
+    const char *ping_message = "ENCRYPT_APP_PING";
+    printf("Sending UDP ping to %s:%d\n", 
+           inet_ntoa(GroundStation.DataAddr.sin_addr),
+           ntohs(GroundStation.DataAddr.sin_port));
+    
+    if (sendto(GroundStation.DataSocketFD, ping_message, strlen(ping_message), 0,
+               (struct sockaddr*)&GroundStation.DataAddr, 
+               sizeof(GroundStation.DataAddr)) < 0) {
+        perror("UDP ping sendto failed");
+    } else {
+        printf("UDP ping sent successfully\n");
+    }
+}
+
 /* Signal handler for clean shutdown */
 void handle_signal(int signal) {
     printf("\nReceived signal %d, shutting down...\n", signal);
@@ -661,6 +676,8 @@ void GroundStation_Run(void) {
     time_t current_time;
     
     printf("Ground station running. Press Ctrl+C to exit.\n");
+
+    GroundStation_SendUdpPing();
     
     /* Main loop */
     while (keep_running) {
