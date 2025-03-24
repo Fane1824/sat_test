@@ -1,4 +1,4 @@
-.c
+main.c
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,15 +32,6 @@
 /* Flag for program termination */
 static volatile int keep_running = 1;
 
-/* RSA key pair for encryption (private key must match the one in encrypt_app.c) */
-const char *RSA_PRIVATE_KEY = 
-    "(private-key (rsa (n #00BA65A53C3A3C02A87679B5F86A9BE4E5AB38475709E8784B0F2C3C573219E609AACB0C6D5F550879AA1AA80961C48AB663930F6FAAD5F1860E39A7B1A58A543#)"
-    "(e #010001#)"
-    "(d #0471A07F8C41A538284D78094D5CA68B1860EB680F571BAB964FC9EBCA9894F15B2A49478956A04E464D0D2BA6BE6969B866F4D9BEE631A7055EC955F3315C73#)"
-    "(p #00D2B037CB00F9B13FE4B4B3B571C95891BA2AE79F27E19F54D758B2F605F07B#)"
-    "(q #00E13B2F0E41EB0079940C973D3D92F2AC0A64A9EF3507C73D5AF8D39C7F5557#)"
-    "(u #7764D724705A5BB528446AB9C428CE693C1C77E8CFEF78C487CE0B9C96B17513#))";
-
 /* Ground station state data */
 typedef struct {
     /* Network */
@@ -70,6 +61,7 @@ void print_hex_dump(const char *title, const void *data, size_t len);
 int GroundStation_Init(const char *hostname, int port, int msg_interval, int key_interval);
 void GroundStation_Cleanup(void);
 int GroundStation_InitCrypto(void);
+int GroundStation_GenerateOrLoadKeys(void);
 void GroundStation_SendCommand(uint16_t command_code);
 void GroundStation_SendEncryptedMessage(const char *message);
 void GroundStation_SendKeyRotation(void);
@@ -260,55 +252,187 @@ int GroundStation_InitCrypto(void) {
     /* Initialize the library */
     gcry_control(GCRYCTL_INITIALIZATION_FINISHED, 0);
     
-    /* Convert RSA private key from string to S-expression */
-    gcry_error_t err = gcry_sexp_sscan(&GroundStation.RSAPrivateKey, 
-                                       NULL, 
-                                       RSA_PRIVATE_KEY, 
-                                       strlen(RSA_PRIVATE_KEY));
-    if (err) {
-        fprintf(stderr, "Failed to load RSA private key: %s/%s\n",
-               gcry_strsource(err), gcry_strerror(err));
+    /* Generate or load RSA keys */
+    if (GroundStation_GenerateOrLoadKeys() != 0) {
+        fprintf(stderr, "Failed to initialize RSA keys\n");
         return -1;
-    }
-    
-    /* Extract the public key components from the private key */
-    gcry_sexp_t n = gcry_sexp_find_token(GroundStation.RSAPrivateKey, "n", 0);
-    gcry_sexp_t e = gcry_sexp_find_token(GroundStation.RSAPrivateKey, "e", 0);
-    
-    if (!n || !e) {
-        fprintf(stderr, "Failed to extract public key components\n");
-        if (n) gcry_sexp_release(n);
-        if (e) gcry_sexp_release(e);
-        return -1;
-    }
-    
-    /* Build the public key from the components */
-    err = gcry_sexp_build(&GroundStation.RSAPublicKey, NULL,
-                         "(public-key (rsa (n %S) (e %S)))", n, e);
-    
-    /* Release the components */
-    gcry_sexp_release(n);
-    gcry_sexp_release(e);
-    
-    if (err) {
-        fprintf(stderr, "Failed to build public key: %s/%s\n",
-               gcry_strsource(err), gcry_strerror(err));
-        return -1;
-    }
-    
-    /* Print confirmation */
-    char *pubkey_str;
-    size_t len;
-    len = gcry_sexp_sprint(GroundStation.RSAPublicKey, GCRYSEXP_FMT_ADVANCED, NULL, 0);
-    pubkey_str = malloc(len);
-    if (pubkey_str) {
-        gcry_sexp_sprint(GroundStation.RSAPublicKey, GCRYSEXP_FMT_ADVANCED, pubkey_str, len);
-        printf("Generated public key from private key:\n%s\n", pubkey_str);
-        free(pubkey_str);
     }
     
     /* Initialize random number generator */
     gcry_randomize(NULL, 0, GCRY_STRONG_RANDOM);
+    
+    return 0;
+}
+
+/* Generate or load RSA key pair */
+int GroundStation_GenerateOrLoadKeys(void) {
+    const char *key_path = "encrypt_app_rsa.key";
+    FILE *key_file;
+    
+    /* Check if key file exists */
+    if ((key_file = fopen(key_path, "rb")) != NULL) {
+        /* Key file exists, load it */
+        printf("Loading RSA key from file: %s\n", key_path);
+        
+        /* Get file size */
+        fseek(key_file, 0, SEEK_END);
+        long file_size = ftell(key_file);
+        rewind(key_file);
+        
+        /* Read key data */
+        char *key_data = malloc(file_size + 1);
+        if (!key_data) {
+            fclose(key_file);
+            fprintf(stderr, "Memory allocation failed\n");
+            return -1;
+        }
+        
+        size_t read_size = fread(key_data, 1, file_size, key_file);
+        fclose(key_file);
+        
+        if (read_size != file_size) {
+            free(key_data);
+            fprintf(stderr, "Failed to read key file\n");
+            return -1;
+        }
+        
+        key_data[file_size] = '\0';
+        
+        /* Parse key S-expression */
+        gcry_error_t err = gcry_sexp_sscan(&GroundStation.RSAPrivateKey, 
+                                          NULL, key_data, file_size);
+        free(key_data);
+        
+        if (err) {
+            fprintf(stderr, "Failed to parse key file: %s/%s\n",
+                   gcry_strsource(err), gcry_strerror(err));
+            return -1;
+        }
+    } else {
+        /* Key file doesn't exist, generate a new key pair */
+        printf("Generating new RSA key pair...\n");
+        
+        /* Generate key parameters */
+        const int key_bits = 2048;
+        gcry_sexp_t key_params;
+        gcry_error_t err = gcry_sexp_build(&key_params, NULL,
+                                          "(genkey (rsa (nbits %d)))", key_bits);
+        if (err) {
+            fprintf(stderr, "Failed to create key generation parameters: %s/%s\n",
+                   gcry_strsource(err), gcry_strerror(err));
+            return -1;
+        }
+        
+        /* Generate the key pair */
+        err = gcry_pk_genkey(&GroundStation.RSAPrivateKey, key_params);
+        gcry_sexp_release(key_params);
+        
+        if (err) {
+            fprintf(stderr, "Failed to generate RSA key: %s/%s\n",
+                   gcry_strsource(err), gcry_strerror(err));
+            return -1;
+        }
+        
+        /* Save the key to file */
+        printf("Saving RSA key to file: %s\n", key_path);
+        
+        /* Serialize key */
+        size_t key_len = gcry_sexp_sprint(GroundStation.RSAPrivateKey, 
+                                         GCRYSEXP_FMT_ADVANCED, 
+                                         NULL, 0);
+        char *key_str = malloc(key_len);
+        if (!key_str) {
+            fprintf(stderr, "Memory allocation failed\n");
+            return -1;
+        }
+        
+        gcry_sexp_sprint(GroundStation.RSAPrivateKey, 
+                        GCRYSEXP_FMT_ADVANCED, key_str, key_len);
+        
+        /* Write to file */
+        key_file = fopen(key_path, "wb");
+        if (!key_file) {
+            free(key_str);
+            fprintf(stderr, "Failed to create key file\n");
+            return -1;
+        }
+        
+        size_t write_size = fwrite(key_str, 1, key_len - 1, key_file); /* -1 to skip null terminator */
+        fclose(key_file);
+        free(key_str);
+        
+        if (write_size != key_len - 1) {
+            fprintf(stderr, "Failed to write key file\n");
+            return -1;
+        }
+        
+        printf("RSA key saved successfully\n");
+    }
+    
+    /* Extract public key components */
+    printf("Extracting public key from private key...\n");
+    
+    /* Find the public key part */
+    gcry_sexp_t public_key_part = gcry_sexp_find_token(GroundStation.RSAPrivateKey, "public-key", 0);
+    if (public_key_part) {
+        /* If there's a public-key token, use it directly */
+        GroundStation.RSAPublicKey = gcry_sexp_copy(public_key_part);
+        gcry_sexp_release(public_key_part);
+    } else {
+        /* Extract n and e components and build public key */
+        gcry_sexp_t rsa = gcry_sexp_find_token(GroundStation.RSAPrivateKey, "rsa", 0);
+        if (!rsa) {
+            fprintf(stderr, "Failed to find RSA token in key\n");
+            return -1;
+        }
+        
+        gcry_sexp_t n = gcry_sexp_find_token(rsa, "n", 0);
+        gcry_sexp_t e = gcry_sexp_find_token(rsa, "e", 0);
+        gcry_sexp_release(rsa);
+        
+        if (!n || !e) {
+            fprintf(stderr, "Failed to extract key components\n");
+            if (n) gcry_sexp_release(n);
+            if (e) gcry_sexp_release(e);
+            return -1;
+        }
+        
+        /* Get the actual MPI values */
+        gcry_mpi_t n_mpi = gcry_sexp_nth_mpi(n, 1, GCRYMPI_FMT_USG);
+        gcry_mpi_t e_mpi = gcry_sexp_nth_mpi(e, 1, GCRYMPI_FMT_USG);
+        gcry_sexp_release(n);
+        gcry_sexp_release(e);
+        
+        if (!n_mpi || !e_mpi) {
+            fprintf(stderr, "Failed to extract MPI values\n");
+            if (n_mpi) gcry_mpi_release(n_mpi);
+            if (e_mpi) gcry_mpi_release(e_mpi);
+            return -1;
+        }
+        
+        /* Build the public key */
+        gcry_error_t err = gcry_sexp_build(&GroundStation.RSAPublicKey, NULL,
+                                          "(public-key (rsa (n %m) (e %m)))",
+                                          n_mpi, e_mpi);
+        gcry_mpi_release(n_mpi);
+        gcry_mpi_release(e_mpi);
+        
+        if (err) {
+            fprintf(stderr, "Failed to build public key: %s/%s\n",
+                   gcry_strsource(err), gcry_strerror(err));
+            return -1;
+        }
+    }
+    
+    /* Print public key */
+    char *pubkey_str;
+    size_t len = gcry_sexp_sprint(GroundStation.RSAPublicKey, GCRYSEXP_FMT_ADVANCED, NULL, 0);
+    pubkey_str = malloc(len);
+    if (pubkey_str) {
+        gcry_sexp_sprint(GroundStation.RSAPublicKey, GCRYSEXP_FMT_ADVANCED, pubkey_str, len);
+        printf("RSA Public Key:\n%s\n", pubkey_str);
+        free(pubkey_str);
+    }
     
     return 0;
 }
