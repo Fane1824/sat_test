@@ -73,6 +73,7 @@ void GroundStation_SendResetCommand(void);
 void GroundStation_SendMessage(uint16_t msgId, uint8_t cmdCode, void *payload, size_t payloadLen, int useCmd);
 void GroundStation_RunSimulation(int message_interval, int key_rotation_interval);
 void GroundStation_PrintHelp(void);
+void GroundStation_SendTestTelemetry(void);
 
 /* Main function */
 int main(int argc, char *argv[])
@@ -713,6 +714,7 @@ void GroundStation_RunSimulation(int message_interval, int key_rotation_interval
     time(&start_time);
     
     while (1) {
+        GroundStation_SendTestTelemetry();
         time(&current_time);
         run_seconds = (uint32_t)difftime(current_time, start_time);
         
@@ -742,3 +744,46 @@ void GroundStation_RunSimulation(int message_interval, int key_rotation_interval
         usleep(100000); /* 100ms */
     }
 }
+
+/* Add a function to send a very simple telemetry packet that any app should receive */
+void GroundStation_SendTestTelemetry(void)
+{
+    /* Create a very simple telemetry packet */
+    uint8_t test_packet[16] = {0};
+    
+    /* CCSDS Telemetry Header (standard telemetry) */
+    test_packet[0] = 0x08;  /* Version=000, Type=0 (tlm), 2nd hdr flag=0, AppID=00 (3 MSB) */
+    test_packet[1] = 0x01;  /* AppID (8 LSB) - Use 0x0801 which many apps subscribe to */
+    test_packet[2] = 0xC0;  /* Sequence flags=11, Sequence count=000000 */
+    test_packet[3] = 0x00;  /* Sequence count (8 LSB) */
+    test_packet[4] = 0x00;  /* Length (MSB) - Total bytes following primary header minus 1 */
+    test_packet[5] = 0x09;  /* Length (LSB) - 10 bytes - 1 = 9 */
+    
+    /* Simple payload */
+    test_packet[6] = 0xDE;
+    test_packet[7] = 0xAD;
+    test_packet[8] = 0xBE;
+    test_packet[9] = 0xEF;
+    test_packet[10] = 0xCA;
+    test_packet[11] = 0xFE;
+    test_packet[12] = 0xBA;
+    test_packet[13] = 0xBE;
+    test_packet[14] = 0x12;
+    test_packet[15] = 0x34;
+    
+    printf("\n*** SENDING TEST TELEMETRY PACKET ***\n");
+    printf("Sending to TO_LAB on port %d\n", ntohs(GroundStation.TlmAddr.sin_port));
+    print_hex_dump("Test packet", test_packet, sizeof(test_packet));
+    
+    /* Send the packet to TO_LAB */
+    if (sendto(GroundStation.TlmSocketFD, test_packet, sizeof(test_packet), 0,
+              (struct sockaddr *)&GroundStation.TlmAddr, 
+              sizeof(GroundStation.TlmAddr)) < 0) {
+        printf("Error sending test telemetry: %s\n", strerror(errno));
+    } else {
+        printf("Successfully sent test telemetry packet\n");
+    }
+    printf("*** END TEST TELEMETRY ***\n\n");
+}
+
+/* Call this function periodically in your main simulation loop */
