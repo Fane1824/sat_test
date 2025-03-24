@@ -29,9 +29,6 @@ void ENCRYPT_APP_Main(void)
     int32 status;
     CFE_SB_Buffer_t *SBBufPtr;
 
-    /* Register the app with Executive Services */
-    CFE_ES_RegisterApp();
-
     /* Initialize the application */
     status = ENCRYPT_APP_Init();
     

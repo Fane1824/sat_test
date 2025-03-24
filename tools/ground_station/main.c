@@ -18,7 +18,7 @@
 
 /* Default connection settings */
 #define DEFAULT_HOSTNAME  "127.0.0.1"
-#define DEFAULT_PORT      1235
+#define DEFAULT_PORT      1234
 #define BUFFER_SIZE       2048
 
 /* Command codes (must match those in encrypt_app_msg.h) */
@@ -495,8 +495,7 @@ void GroundStation_SendEncryptedMessage(const char *message)
         return;
     }
     
-    /* Calculate the padded message length 
-       (AES works on 16-byte blocks, so we need to pad to a multiple of 16) */
+    /* Calculate the padded message length */
     size_t msg_len = strlen(message);
     size_t padded_len = ((msg_len + 15) / 16) * 16; /* Round up to multiple of 16 */
     
@@ -524,32 +523,54 @@ void GroundStation_SendEncryptedMessage(const char *message)
     /* Calculate the total size of the encrypted message (IV + encrypted data) */
     size_t encrypted_len = 16 + padded_len;
     
-    /* Create simpler packet with only primary header (6 bytes) */
-    uint8_t header[6] = {0};
-    header[0] = 0x18;  /* Version (3 bits), Type (1 bit), Sec Hdr Flag (1 bit), App ID (3 bits MSB) */
-    header[1] = 0x84;  /* App ID (8 bits LSB) - This is for ENCRYPT_APP_ENCRYPTED_MID (0x1884) */
-    header[2] = 0xC0;  /* Sequence flags (2 bits), Sequence count (6 bits MSB) */
-    header[3] = 0x00;  /* Sequence count (8 bits LSB) */
+    /* Create two packets: a command to CI_LAB and a data packet */
     
-    /* Packet length field: total bytes following primary header minus 1 */
-    uint16_t length = encrypted_len - 1;  /* total bytes minus 1 as per CCSDS spec */
-    header[4] = (length >> 8) & 0xFF;  /* Length (8 bits MSB) */
-    header[5] = length & 0xFF;         /* Length (8 bits LSB) */
+    /* 1. First send a small command packet to notify CI_LAB */
+    uint8_t cmd_packet[8] = {0};  /* CI_LAB expects 8-byte command */
+    cmd_packet[0] = 0x18;
+    cmd_packet[1] = 0x84;  /* ENCRYPT_APP_ENCRYPTED_MID (0x1884) */
+    cmd_packet[2] = 0xC0;
+    cmd_packet[3] = 0x00;
+    cmd_packet[4] = 0x00;
+    cmd_packet[5] = 0x01;  /* Length of 1 byte for command code */
+    cmd_packet[6] = 0x00;  /* Command code 0 (NOOP equivalent) */
+    cmd_packet[7] = 0x00;  /* Reserved/alignment */
     
-    /* Combine the header and encrypted data into a complete packet */
-    uint8_t complete_packet[BUFFER_SIZE];
-    memcpy(complete_packet, header, 6);  /* Only 6 bytes for primary header */
-    memcpy(complete_packet + 6, ciphertext, encrypted_len);
-    size_t total_packet_size = 6 + encrypted_len;
+    print_hex_dump("Sending command packet", cmd_packet, sizeof(cmd_packet));
     
-    /* Debug output */
-    print_hex_dump("Sending simplified packet", complete_packet, total_packet_size);
-    
-    /* Send the packet */
-    if (sendto(GroundStation.SocketFD, complete_packet, total_packet_size, 0,
+    /* Send the command packet */
+    if (sendto(GroundStation.SocketFD, cmd_packet, sizeof(cmd_packet), 0,
               (struct sockaddr *)&GroundStation.ServerAddr, 
               sizeof(GroundStation.ServerAddr)) < 0) {
-        perror("sendto failed");
+        perror("sendto failed for command packet");
+    }
+    
+    /* 2. Then send the actual data packet with encrypted message */
+    /* Create primary header (6 bytes) */
+    uint8_t header[6] = {0};
+    header[0] = 0x18;
+    header[1] = 0x84;  /* ENCRYPT_APP_ENCRYPTED_MID (0x1884) */
+    header[2] = 0xC0;
+    header[3] = 0x00;
+    
+    uint16_t length = encrypted_len - 1;
+    header[4] = (length >> 8) & 0xFF;
+    header[5] = length & 0xFF;
+    
+    /* Wait a short time before sending data packet */
+    usleep(100000);  /* 100ms sleep */
+    
+    uint8_t data_packet[BUFFER_SIZE];
+    memcpy(data_packet, header, 6);
+    memcpy(data_packet + 6, ciphertext, encrypted_len);
+    
+    print_hex_dump("Sending data packet", data_packet, 6 + encrypted_len);
+    
+    /* Send the data packet */
+    if (sendto(GroundStation.SocketFD, data_packet, 6 + encrypted_len, 0,
+              (struct sockaddr *)&GroundStation.ServerAddr, 
+              sizeof(GroundStation.ServerAddr)) < 0) {
+        perror("sendto failed for data packet");
     } else {
         printf("Sent encrypted message to satellite: \"%s\"\n", message);
     }
