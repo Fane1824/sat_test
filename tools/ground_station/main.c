@@ -54,14 +54,6 @@ typedef struct {
 
 GroundStation_t GroundStation;
 
-/* RSA public key in S-expression format */
-   const char *RSA_PUBLIC_KEY = 
-   "(public-key\n"
-   " (rsa\n"
-   "  (n #00BA65A53C3A3C02A87679B5F86A9BE4E5AB38475709E8784B0F2C3C573219E609AACB0C6D5F550879AA1AA80961C48AB663930F6FAAD5F1860E39A7B1A58A543#)\n"
-   "  (e #010001#)\n"
-   " )\n"
-   ")";
 
 /* Function prototypes */
 int GroundStation_InitCrypto(void);
@@ -169,6 +161,9 @@ void GroundStation_PrintHelp(void)
 }
 
 /* Initialize cryptographic operations */
+/* Remove the RSA_PUBLIC_KEY constant */
+/* And modify the GroundStation_InitCrypto function: */
+
 int GroundStation_InitCrypto(void)
 {
     /* Initialize libgcrypt */
@@ -183,13 +178,39 @@ int GroundStation_InitCrypto(void)
     /* Initialize the library */
     gcry_control(GCRYCTL_INITIALIZATION_FINISHED, 0);
     
-    /* Convert RSA public key from string to S-expression */
-    gcry_error_t err = gcry_sexp_sscan(&GroundStation.RSAPublicKey, 
-                                      NULL, 
-                                      RSA_PUBLIC_KEY, 
-                                      strlen(RSA_PUBLIC_KEY));
+    /* Create RSA public key from components instead of string */
+    gcry_mpi_t n, e;
+    gcry_error_t err;
+    
+    /* Import the modulus (n) */
+    err = gcry_mpi_scan(&n, GCRYMPI_FMT_HEX, 
+        "00BA65A53C3A3C02A87679B5F86A9BE4E5AB38475709E8784B0F2C3C573219E609AACB0C6D5F550879AA1AA80961C48AB663930F6FAAD5F1860E39A7B1A58A543", 
+        0, NULL);
     if (err) {
-        fprintf(stderr, "Failed to load RSA public key: %s/%s\n",
+        fprintf(stderr, "Failed to create modulus MPI: %s/%s\n",
+               gcry_strsource(err), gcry_strerror(err));
+        return -1;
+    }
+    
+    /* Import the public exponent (e) */
+    err = gcry_mpi_scan(&e, GCRYMPI_FMT_HEX, "010001", 0, NULL);
+    if (err) {
+        gcry_mpi_release(n);
+        fprintf(stderr, "Failed to create exponent MPI: %s/%s\n",
+               gcry_strsource(err), gcry_strerror(err));
+        return -1;
+    }
+    
+    /* Create the S-expression */
+    err = gcry_sexp_build(&GroundStation.RSAPublicKey, NULL,
+                        "(public-key (rsa (n %m) (e %m)))", n, e);
+    
+    /* Free the MPIs */
+    gcry_mpi_release(n);
+    gcry_mpi_release(e);
+    
+    if (err) {
+        fprintf(stderr, "Failed to build RSA public key: %s/%s\n",
                gcry_strsource(err), gcry_strerror(err));
         return -1;
     }
