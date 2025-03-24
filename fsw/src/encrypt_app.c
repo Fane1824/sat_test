@@ -25,6 +25,28 @@ const char *RSA_PRIVATE_KEY =
 #define ENCRYPT_APP_ENCRYPTED_TLM_MID 0x0884  /* Telemetry version of ENCRYPT_APP_ENCRYPTED_MID */
 #define ENCRYPT_APP_KEY_ROT_TLM_MID   0x0885  /* Telemetry version of ENCRYPT_APP_KEY_ROT_MID */
 
+/* Add debug function at the top of your file, after includes */
+void ENCRYPT_APP_DebugPrintHexDump(const char *title, const void *data, size_t len) {
+    const unsigned char *p = data;
+    char debug_str[256] = {0};
+    size_t debug_pos = 0;
+    
+    OS_printf("%s (%zu bytes):\n", title, len);
+    
+    for (size_t i = 0; i < len; i++) {
+        /* Add to debug string */
+        debug_pos += snprintf(debug_str + debug_pos, sizeof(debug_str) - debug_pos, 
+                              "%02X ", p[i]);
+        
+        /* Print debug string every 16 bytes or at the end */
+        if ((i + 1) % 16 == 0 || i == len - 1) {
+            OS_printf("%s\n", debug_str);
+            debug_pos = 0;
+            memset(debug_str, 0, sizeof(debug_str));
+        }
+    }
+}
+
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 /* ENCRYPT_APP_Main() -- Application entry point and main process loop      */
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
@@ -43,6 +65,18 @@ void ENCRYPT_APP_Main(void)
     }
     else
     {
+        /* Debug message */
+        OS_printf("\n========================================\n");
+        OS_printf("ENCRYPT_APP: Starting main loop\n");
+        OS_printf("  App is listening for the following message IDs:\n");
+        OS_printf("    Command:        0x%04X\n", (unsigned int)CFE_SB_MsgIdToValue(CFE_SB_ValueToMsgId(ENCRYPT_APP_CMD_MID)));
+        OS_printf("    Housekeeping:   0x%04X\n", (unsigned int)CFE_SB_MsgIdToValue(CFE_SB_ValueToMsgId(ENCRYPT_APP_SEND_HK_MID)));
+        OS_printf("    Encrypted:      0x%04X\n", (unsigned int)CFE_SB_MsgIdToValue(CFE_SB_ValueToMsgId(ENCRYPT_APP_ENCRYPTED_MID)));
+        OS_printf("    Key Rotation:   0x%04X\n", (unsigned int)CFE_SB_MsgIdToValue(CFE_SB_ValueToMsgId(ENCRYPT_APP_KEY_ROT_MID)));
+        OS_printf("    Encrypted TLM:  0x%04X\n", (unsigned int)CFE_SB_MsgIdToValue(CFE_SB_ValueToMsgId(ENCRYPT_APP_ENCRYPTED_TLM_MID)));
+        OS_printf("    Key Rot TLM:    0x%04X\n", (unsigned int)CFE_SB_MsgIdToValue(CFE_SB_ValueToMsgId(ENCRYPT_APP_KEY_ROT_TLM_MID)));
+        OS_printf("========================================\n\n");
+
         /* Application main loop */
         while (CFE_ES_RunLoop(&ENCRYPT_APP_Data.RunStatus) == true)
         {
@@ -204,13 +238,15 @@ CFE_Status_t ENCRYPT_APP_Init(void)
                      ENCRYPT_APP_MISSION_REV);
 
     /* Debug: Print message IDs we're subscribing to */
+    OS_printf("\n****************************************\n");
     OS_printf("ENCRYPT_APP: Subscribing to message IDs:\n");
-    OS_printf("  CMD MID:        0x%04X\n", (unsigned int)CFE_SB_MsgIdToValue(CFE_SB_ValueToMsgId(ENCRYPT_APP_CMD_MID)));
-    OS_printf("  SEND_HK MID:    0x%04X\n", (unsigned int)CFE_SB_MsgIdToValue(CFE_SB_ValueToMsgId(ENCRYPT_APP_SEND_HK_MID)));
-    OS_printf("  ENCRYPTED MID:  0x%04X\n", (unsigned int)CFE_SB_MsgIdToValue(CFE_SB_ValueToMsgId(ENCRYPT_APP_ENCRYPTED_MID)));
-    OS_printf("  KEY_ROT MID:    0x%04X\n", (unsigned int)CFE_SB_MsgIdToValue(CFE_SB_ValueToMsgId(ENCRYPT_APP_KEY_ROT_MID)));
-    OS_printf("  ENCRYPTED TLM:  0x%04X\n", (unsigned int)CFE_SB_MsgIdToValue(CFE_SB_ValueToMsgId(ENCRYPT_APP_ENCRYPTED_TLM_MID)));
-    OS_printf("  KEY_ROT TLM:    0x%04X\n", (unsigned int)CFE_SB_MsgIdToValue(CFE_SB_ValueToMsgId(ENCRYPT_APP_KEY_ROT_TLM_MID)));
+    OS_printf("  Command:        0x%04X\n", (unsigned int)CFE_SB_MsgIdToValue(CFE_SB_ValueToMsgId(ENCRYPT_APP_CMD_MID)));
+    OS_printf("  Housekeeping:   0x%04X\n", (unsigned int)CFE_SB_MsgIdToValue(CFE_SB_ValueToMsgId(ENCRYPT_APP_SEND_HK_MID)));
+    OS_printf("  Encrypted:      0x%04X\n", (unsigned int)CFE_SB_MsgIdToValue(CFE_SB_ValueToMsgId(ENCRYPT_APP_ENCRYPTED_MID)));
+    OS_printf("  Key Rotation:   0x%04X\n", (unsigned int)CFE_SB_MsgIdToValue(CFE_SB_ValueToMsgId(ENCRYPT_APP_KEY_ROT_MID)));
+    OS_printf("  Encrypted TLM:  0x%04X\n", (unsigned int)CFE_SB_MsgIdToValue(CFE_SB_ValueToMsgId(ENCRYPT_APP_ENCRYPTED_TLM_MID)));
+    OS_printf("  Key Rot TLM:    0x%04X\n", (unsigned int)CFE_SB_MsgIdToValue(CFE_SB_ValueToMsgId(ENCRYPT_APP_KEY_ROT_TLM_MID)));
+    OS_printf("****************************************\n\n");
 
     return CFE_SUCCESS;
 }
@@ -254,13 +290,49 @@ int ENCRYPT_APP_InitCrypto(void)
 void ENCRYPT_APP_ProcessCommandPacket(CFE_SB_Buffer_t *BufPtr)
 {
     CFE_SB_MsgId_t MsgId = CFE_SB_INVALID_MSG_ID;
+    CFE_MSG_Size_t MsgSize = 0;
+    CFE_MSG_FcnCode_t FcnCode = 0;
     
-    /* Get the message ID from the message */
+    /* Get the message ID, size, and function code */
     CFE_MSG_GetMsgId(&BufPtr->Msg, &MsgId);
-
-    OS_printf("ENCRYPT_APP: Received message with ID 0x%04X\n", 
-        (unsigned int)CFE_SB_MsgIdToValue(MsgId));
+    CFE_MSG_GetSize(&BufPtr->Msg, &MsgSize);
+    CFE_MSG_GetFcnCode(&BufPtr->Msg, &FcnCode);
     
+    OS_printf("\n****************************************\n");
+    OS_printf("ENCRYPT_APP: Received message:\n");
+    OS_printf("  Message ID:     0x%04X\n", (unsigned int)CFE_SB_MsgIdToValue(MsgId));
+    OS_printf("  Message Size:   %u bytes\n", (unsigned int)MsgSize);
+    OS_printf("  Function Code:  %u\n", (unsigned int)FcnCode);
+    
+    /* Print the raw message for debug purposes */
+    ENCRYPT_APP_DebugPrintHexDump("Raw Message", BufPtr, MsgSize);
+    
+    /* Check if this is one of our message IDs */
+    CFE_SB_MsgId_t cmd_id = CFE_SB_ValueToMsgId(ENCRYPT_APP_CMD_MID);
+    CFE_SB_MsgId_t hk_id = CFE_SB_ValueToMsgId(ENCRYPT_APP_SEND_HK_MID);
+    CFE_SB_MsgId_t enc_id = CFE_SB_ValueToMsgId(ENCRYPT_APP_ENCRYPTED_MID);
+    CFE_SB_MsgId_t key_id = CFE_SB_ValueToMsgId(ENCRYPT_APP_KEY_ROT_MID);
+    CFE_SB_MsgId_t enc_tlm_id = CFE_SB_ValueToMsgId(ENCRYPT_APP_ENCRYPTED_TLM_MID);
+    CFE_SB_MsgId_t key_tlm_id = CFE_SB_ValueToMsgId(ENCRYPT_APP_KEY_ROT_TLM_MID);
+    
+    OS_printf("  Message Type:  ");
+    if (CFE_SB_MsgId_Equal(MsgId, cmd_id)) 
+        OS_printf("Command\n");
+    else if (CFE_SB_MsgId_Equal(MsgId, hk_id)) 
+        OS_printf("Housekeeping\n");
+    else if (CFE_SB_MsgId_Equal(MsgId, enc_id)) 
+        OS_printf("Encrypted Message\n");
+    else if (CFE_SB_MsgId_Equal(MsgId, key_id)) 
+        OS_printf("Key Rotation\n");
+    else if (CFE_SB_MsgId_Equal(MsgId, enc_tlm_id)) 
+        OS_printf("Encrypted Telemetry\n");
+    else if (CFE_SB_MsgId_Equal(MsgId, key_tlm_id)) 
+        OS_printf("Key Rotation Telemetry\n");
+    else
+        OS_printf("Unknown\n");
+    
+    OS_printf("****************************************\n\n");
+
     /* Process based on message ID */
     if (CFE_SB_MsgId_Equal(MsgId, CFE_SB_ValueToMsgId(ENCRYPT_APP_CMD_MID)))
     {
