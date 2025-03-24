@@ -184,6 +184,13 @@ CFE_Status_t ENCRYPT_APP_Init(void)
                      ENCRYPT_APP_REVISION,
                      ENCRYPT_APP_MISSION_REV);
 
+    /* Debug: Print message IDs we're subscribing to */
+    OS_printf("ENCRYPT_APP: Subscribing to message IDs:\n");
+    OS_printf("  CMD MID:        0x%04X\n", (unsigned int)CFE_SB_MsgIdToValue(CFE_SB_ValueToMsgId(ENCRYPT_APP_CMD_MID)));
+    OS_printf("  SEND_HK MID:    0x%04X\n", (unsigned int)CFE_SB_MsgIdToValue(CFE_SB_ValueToMsgId(ENCRYPT_APP_SEND_HK_MID)));
+    OS_printf("  ENCRYPTED MID:  0x%04X\n", (unsigned int)CFE_SB_MsgIdToValue(CFE_SB_ValueToMsgId(ENCRYPT_APP_ENCRYPTED_MID)));
+    OS_printf("  KEY_ROT MID:    0x%04X\n", (unsigned int)CFE_SB_MsgIdToValue(CFE_SB_ValueToMsgId(ENCRYPT_APP_KEY_ROT_MID)));
+
     return CFE_SUCCESS;
 }
 
@@ -229,6 +236,9 @@ void ENCRYPT_APP_ProcessCommandPacket(CFE_SB_Buffer_t *BufPtr)
     
     /* Get the message ID from the message */
     CFE_MSG_GetMsgId(&BufPtr->Msg, &MsgId);
+
+    OS_printf("ENCRYPT_APP: Received message with ID 0x%04X\n", 
+        (unsigned int)CFE_SB_MsgIdToValue(MsgId));
     
     /* Process based on message ID */
     if (CFE_SB_MsgId_Equal(MsgId, CFE_SB_ValueToMsgId(ENCRYPT_APP_CMD_MID)))

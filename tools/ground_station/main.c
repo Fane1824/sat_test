@@ -11,14 +11,14 @@
 #include <gcrypt.h>
 
 /* Message IDs (must match those in the cFS app) */
-#define ENCRYPT_APP_CMD_MID            0x1812
-#define ENCRYPT_APP_SEND_HK_MID        0x1813
-#define ENCRYPT_APP_ENCRYPTED_MID      0x1814
-#define ENCRYPT_APP_KEY_ROT_MID        0x1815
+#define ENCRYPT_APP_CMD_MID            0x1882
+#define ENCRYPT_APP_SEND_HK_MID        0x1883
+#define ENCRYPT_APP_ENCRYPTED_MID      0x1884
+#define ENCRYPT_APP_KEY_ROT_MID        0x1885
 
 /* Default connection settings */
 #define DEFAULT_HOSTNAME  "127.0.0.1"
-#define DEFAULT_PORT      1234
+#define DEFAULT_PORT      1235
 #define BUFFER_SIZE       2048
 
 /* Command codes (must match those in encrypt_app_msg.h) */
