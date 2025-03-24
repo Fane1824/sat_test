@@ -444,25 +444,127 @@ void GroundStation_SendMessage(uint16_t msgId, uint8_t cmdCode, void *payload, s
 }
 
 /* Send an encrypted message to the satellite */
-void GroundStation_SendEncryptedMessage(const char *message)
+void GroundStation_SendEncryptedMessage(const char *message) 
 {
-    unsigned char ciphertext[512];
-    size_t ciphertext_len;
-    
-    /* Encrypt the message */
-    int status = GroundStation_EncryptMessage(message, strlen(message), 
-                                             ciphertext, &ciphertext_len);
-    if (status != 0) {
-        fprintf(stderr, "Failed to encrypt message\n");
+    /* Debugging helper function */
+    void print_hex_dump(const char *title, const void *data, size_t len) {
+        printf("%s (%zu bytes):\n", title, len);
+        const unsigned char *p = data;
+        for (size_t i = 0; i < len; i++) {
+            printf("%02X ", p[i]);
+            if ((i + 1) % 16 == 0 || i == len - 1)
+                printf("\n");
+        }
+    }
+
+    if (!message || strlen(message) == 0) {
+        fprintf(stderr, "Empty message, not sending\n");
         return;
     }
     
-    printf("GROUND STATION: Sending encrypted message: \"%s\"\n", message);
+    /* Generate a random IV for this message */
+    unsigned char iv[16] = {0};
+    gcry_randomize(iv, 16, GCRY_STRONG_RANDOM);
     
-    /* Send encrypted message to cFS */
-    GroundStation_SendMessage(ENCRYPT_APP_ENCRYPTED_MID, 0, ciphertext, ciphertext_len);
+    /* Create a buffer for the ciphertext (IV + encrypted data) */
+    unsigned char ciphertext[BUFFER_SIZE];
+    memcpy(ciphertext, iv, 16); /* Copy the IV to the beginning of the ciphertext */
     
-    GroundStation.MessageCounter++;
+    /* Open a cipher handle */
+    gcry_cipher_hd_t cipher;
+    gcry_error_t err = gcry_cipher_open(&cipher, GCRY_CIPHER_AES256, GCRY_CIPHER_MODE_CBC, 0);
+    if (err) {
+        fprintf(stderr, "Failed to open cipher: %s/%s\n",
+               gcry_strsource(err), gcry_strerror(err));
+        return;
+    }
+    
+    /* Set the key */
+    err = gcry_cipher_setkey(cipher, GroundStation.AESKey, sizeof(GroundStation.AESKey));
+    if (err) {
+        fprintf(stderr, "Failed to set key: %s/%s\n",
+               gcry_strsource(err), gcry_strerror(err));
+        gcry_cipher_close(cipher);
+        return;
+    }
+    
+    /* Set the IV */
+    err = gcry_cipher_setiv(cipher, iv, 16);
+    if (err) {
+        fprintf(stderr, "Failed to set IV: %s/%s\n",
+               gcry_strsource(err), gcry_strerror(err));
+        gcry_cipher_close(cipher);
+        return;
+    }
+    
+    /* Calculate the padded message length 
+       (AES works on 16-byte blocks, so we need to pad to a multiple of 16) */
+    size_t msg_len = strlen(message);
+    size_t padded_len = ((msg_len + 15) / 16) * 16; /* Round up to multiple of 16 */
+    
+    /* Create a buffer for the plaintext with padding */
+    unsigned char *plaintext = (unsigned char *)calloc(padded_len, 1);
+    if (!plaintext) {
+        fprintf(stderr, "Memory allocation error\n");
+        gcry_cipher_close(cipher);
+        return;
+    }
+    
+    /* Copy the message to the plaintext buffer and pad with zeros */
+    memcpy(plaintext, message, msg_len);
+    
+    /* Encrypt the message */
+    err = gcry_cipher_encrypt(cipher, ciphertext + 16, padded_len, plaintext, padded_len);
+    if (err) {
+        fprintf(stderr, "Encryption failed: %s/%s\n",
+               gcry_strsource(err), gcry_strerror(err));
+        free(plaintext);
+        gcry_cipher_close(cipher);
+        return;
+    }
+    
+    /* Calculate the total size of the encrypted message (IV + encrypted data) */
+    size_t encrypted_len = 16 + padded_len;
+    
+    /* Prepare the CCSDS packet header (16 bytes) */
+    uint8_t header[16] = {0};
+    
+    /* CCSDS Primary Header (6 bytes) */
+    header[0] = 0x18;  /* Version (3 bits), Type (1 bit), Sec Hdr Flag (1 bit), App ID (3 bits MSB) */
+    header[1] = 0x84;  /* App ID (8 bits LSB) - This is for ENCRYPT_APP_ENCRYPTED_MID (0x1884) */
+    header[2] = 0xC0;  /* Sequence flags (2 bits), Sequence count (6 bits MSB) */
+    header[3] = 0x00;  /* Sequence count (8 bits LSB) */
+    
+    /* Packet length field: total bytes following primary header minus 1 */
+    uint16_t length = encrypted_len + 10 - 7;  /* +10 for secondary header, -7 as per CCSDS spec */
+    header[4] = (length >> 8) & 0xFF;  /* Length (8 bits MSB) */
+    header[5] = length & 0xFF;         /* Length (8 bits LSB) */
+    
+    /* CCSDS Secondary Header (10 bytes) for cFS Time */
+    /* Seconds and subseconds - set to current time if needed */
+    memset(header + 6, 0, 10);  /* Just use 0 for now, could be replaced with actual time */
+    
+    /* Combine the header and encrypted data into a complete packet */
+    uint8_t complete_packet[BUFFER_SIZE];
+    memcpy(complete_packet, header, 16);
+    memcpy(complete_packet + 16, ciphertext, encrypted_len);
+    size_t total_packet_size = 16 + encrypted_len;
+    
+    /* Debug output */
+    print_hex_dump("Sending packet", complete_packet, total_packet_size);
+    
+    /* Send the packet */
+    if (sendto(GroundStation.SocketFD, complete_packet, total_packet_size, 0,
+              (struct sockaddr *)&GroundStation.ServerAddr, 
+              sizeof(GroundStation.ServerAddr)) < 0) {
+        perror("sendto failed");
+    } else {
+        printf("Sent encrypted message to satellite: \"%s\"\n", message);
+    }
+    
+    /* Clean up */
+    free(plaintext);
+    gcry_cipher_close(cipher);
 }
 
 /* Send a key rotation message to the satellite */
