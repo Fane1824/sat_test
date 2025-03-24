@@ -26,17 +26,7 @@ void ENCRYPT_APP_Main(void)
     int32 status;
     
     /* Register the application with Executive Services */
-    CFE_ES_Main_t AppMainParams;
-    AppMainParams.StartType = CFE_ES_AppStartType_NONE;
-    AppMainParams.CleanupCallback = NULL;
-    AppMainParams.StopCallback = NULL;
-    
-    status = CFE_ES_RegisterApp(&AppMainParams);
-    if (status != CFE_SUCCESS)
-    {
-        CFE_ES_WriteToSysLog("ENCRYPT_APP: Error registering app, RC = %d\n", (int)status);
-        return;
-    }
+    CFE_ES_RegisterApp();
     
     /* Initialize the application */
     status = ENCRYPT_APP_Init();
@@ -152,64 +142,53 @@ int ENCRYPT_APP_InitCrypto(void)
 /* Receive message */
 int32 ENCRYPT_APP_RcvMsg(int32 iBlocking)
 {
-    CFE_SB_Buffer_t *SBBufPtr;
+    CFE_SB_MsgPtr_t MsgPtr;
     int32 status;
     
     /* Wait for WakeUp messages from scheduler */
-    status = CFE_SB_ReceiveBuffer(&SBBufPtr, ENCRYPT_APP_Data.CommandPipe, iBlocking);
+    status = CFE_SB_RcvMsg(&MsgPtr, ENCRYPT_APP_Data.CommandPipe, iBlocking);
     
     if (status == CFE_SUCCESS)
     {
-        /* Process the received buffer */
-        ENCRYPT_APP_ProcessCommandPacket(SBBufPtr);
+        /* Process the received message */
+        CFE_SB_MsgId_t MsgId = CFE_SB_GetMsgId(MsgPtr);
+        
+        if (CFE_SB_MsgId_Equal(MsgId, ENCRYPT_APP_ENCRYPTED_MID))
+        {
+            /* Process encrypted message */
+            uint16 MsgSize = CFE_SB_GetTotalMsgLength(MsgPtr);
+            uint8 *payload = CFE_SB_GetUserData(MsgPtr);
+            uint16 payloadLen = MsgSize - CFE_SB_GetMsgHdrSize();
+            
+            unsigned char decrypted[256];
+            memset(decrypted, 0, sizeof(decrypted));
+            
+            if (ENCRYPT_APP_DecryptMessage(payload, payloadLen, decrypted) == 0) {
+                CFE_ES_WriteToSysLog("ENCRYPT_APP: Decrypted message: %s\n", decrypted);
+                OS_printf("SATELLITE RECEIVED: %s\n", decrypted);
+                ENCRYPT_APP_Data.MsgCounter++;
+            } else {
+                CFE_ES_WriteToSysLog("ENCRYPT_APP: Failed to decrypt message\n");
+            }
+        }
+        else if (CFE_SB_MsgId_Equal(MsgId, ENCRYPT_APP_KEY_ROT_MID))
+        {
+            /* Process key rotation message */
+            uint16 MsgSize = CFE_SB_GetTotalMsgLength(MsgPtr);
+            uint8 *payload = CFE_SB_GetUserData(MsgPtr);
+            uint16 payloadLen = MsgSize - CFE_SB_GetMsgHdrSize();
+            
+            if (ENCRYPT_APP_ProcessKeyRotation(payload, payloadLen) == 0) {
+                CFE_ES_WriteToSysLog("ENCRYPT_APP: Key rotation successful\n");
+                ENCRYPT_APP_Data.KeyRotationCounter++;
+                OS_printf("SATELLITE: Received new AES key #%d\n", (int)ENCRYPT_APP_Data.KeyRotationCounter);
+            } else {
+                CFE_ES_WriteToSysLog("ENCRYPT_APP: Key rotation failed\n");
+            }
+        }
     }
     
     return status;
-}
-
-/* Process command packets */
-void ENCRYPT_APP_ProcessCommandPacket(CFE_SB_Buffer_t *SBBufPtr)
-{
-    CFE_SB_MsgId_t MsgId;
-    CFE_MSG_GetMsgId(&SBBufPtr->Msg, &MsgId);
-    
-    if (CFE_SB_MsgId_Equal(MsgId, ENCRYPT_APP_ENCRYPTED_MID))
-    {
-        /* Process encrypted message */
-        CFE_MSG_Size_t msgSize;
-        CFE_MSG_GetSize(&SBBufPtr->Msg, &msgSize);
-        
-        uint8 *payload = CFE_SB_GetUserData(&SBBufPtr->Msg);
-        size_t payloadLen = msgSize - CFE_SB_GetMsgHdrSize(&SBBufPtr->Msg);
-        
-        unsigned char decrypted[256];
-        memset(decrypted, 0, sizeof(decrypted));
-        
-        if (ENCRYPT_APP_DecryptMessage(payload, payloadLen, decrypted) == 0) {
-            CFE_ES_WriteToSysLog("ENCRYPT_APP: Decrypted message: %s\n", decrypted);
-            OS_printf("SATELLITE RECEIVED: %s\n", decrypted);
-            ENCRYPT_APP_Data.MsgCounter++;
-        } else {
-            CFE_ES_WriteToSysLog("ENCRYPT_APP: Failed to decrypt message\n");
-        }
-    }
-    else if (CFE_SB_MsgId_Equal(MsgId, ENCRYPT_APP_KEY_ROT_MID))
-    {
-        /* Process key rotation message */
-        CFE_MSG_Size_t msgSize;
-        CFE_MSG_GetSize(&SBBufPtr->Msg, &msgSize);
-        
-        uint8 *payload = CFE_SB_GetUserData(&SBBufPtr->Msg);
-        size_t payloadLen = msgSize - CFE_SB_GetMsgHdrSize(&SBBufPtr->Msg);
-        
-        if (ENCRYPT_APP_ProcessKeyRotation(payload, payloadLen) == 0) {
-            CFE_ES_WriteToSysLog("ENCRYPT_APP: Key rotation successful\n");
-            ENCRYPT_APP_Data.KeyRotationCounter++;
-            OS_printf("SATELLITE: Received new AES key #%d\n", (int)ENCRYPT_APP_Data.KeyRotationCounter);
-        } else {
-            CFE_ES_WriteToSysLog("ENCRYPT_APP: Key rotation failed\n");
-        }
-    }
 }
 
 /* Decrypt an AES encrypted message */

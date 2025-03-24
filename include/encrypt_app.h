@@ -11,10 +11,8 @@
 #define ENCRYPT_APP_PIPE_NAME      "ENCRYPT_PIPE"
 
 /* Command and Message IDs */
-#define ENCRYPT_APP_CMD_MID        CFE_SB_ValueToMsgId(0x1880)
-#define ENCRYPT_APP_SEND_HK_MID    CFE_SB_ValueToMsgId(0x1881)
-#define ENCRYPT_APP_ENCRYPTED_MID  CFE_SB_ValueToMsgId(0x1882)
-#define ENCRYPT_APP_KEY_ROT_MID    CFE_SB_ValueToMsgId(0x1883)
+#define ENCRYPT_APP_ENCRYPTED_MID  0x1882
+#define ENCRYPT_APP_KEY_ROT_MID    0x1883
 
 /************************************************************************
  ** Type Definitions
@@ -49,11 +47,6 @@ void ENCRYPT_APP_Main(void);
  * \brief Initialize the Encrypt App
  */
 int32 ENCRYPT_APP_Init(void);
-
-/**
- * \brief Process received messages
- */
-void ENCRYPT_APP_ProcessCommandPacket(CFE_SB_Buffer_t *SBBufPtr);
 
 /**
  * \brief Decrypt an AES encrypted message
