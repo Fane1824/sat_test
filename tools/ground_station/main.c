@@ -1,3 +1,4 @@
+.c
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,81 +10,87 @@
 #include <time.h>
 #include <getopt.h>
 #include <gcrypt.h>
+#include <signal.h>
 
-/* Message IDs (must match those in the cFS app) */
-#define ENCRYPT_APP_CMD_MID            0x1882
-#define ENCRYPT_APP_SEND_HK_MID        0x1883
-#define ENCRYPT_APP_ENCRYPTED_MID      0x1884
-#define ENCRYPT_APP_KEY_ROT_MID        0x1885
-
-/* Default connection settings */
+/* Configuration */
 #define DEFAULT_HOSTNAME  "127.0.0.1"
 #define DEFAULT_PORT      1234
+#define ENCRYPTED_PORT    1236  /* Use dedicated port for encrypted data */
 #define BUFFER_SIZE       2048
+#define AES_KEY_SIZE      32
 
-/* Command codes (must match those in encrypt_app_msg.h) */
-#define ENCRYPT_APP_NOOP_CC 0
-#define ENCRYPT_APP_RESET_CC 1
+/* Command message IDs - match exactly with cFS app */
+#define ENCRYPT_APP_CMD_MID        0x1882
+#define ENCRYPT_APP_SEND_HK_MID    0x1883
+#define ENCRYPT_APP_ENCRYPTED_MID  0x1884
+#define ENCRYPT_APP_KEY_ROT_MID    0x1885
 
-/* CCSDS Headers */
-#define CCSDS_PRI_HDR_SIZE      6
-#define CCSDS_CMD_SEC_HDR_SIZE  2
-#define CCSDS_TLM_SEC_HDR_SIZE  6
+/* Command codes */
+#define ENCRYPT_APP_NOOP_CC        0
+#define ENCRYPT_APP_RESET_CC       1
 
-/* cFS message structures (simplified for ground tool) */
+/* Flag for program termination */
+static volatile int keep_running = 1;
+
+/* RSA key pair for encryption (private key must match the one in encrypt_app.c) */
+const char *RSA_PRIVATE_KEY = 
+    "(private-key (rsa (n #00BA65A53C3A3C02A87679B5F86A9BE4E5AB38475709E8784B0F2C3C573219E609AACB0C6D5F550879AA1AA80961C48AB663930F6FAAD5F1860E39A7B1A58A543#)"
+    "(e #010001#)"
+    "(d #0471A07F8C41A538284D78094D5CA68B1860EB680F571BAB964FC9EBCA9894F15B2A49478956A04E464D0D2BA6BE6969B866F4D9BEE631A7055EC955F3315C73#)"
+    "(p #00D2B037CB00F9B13FE4B4B3B571C95891BA2AE79F27E19F54D758B2F605F07B#)"
+    "(q #00E13B2F0E41EB0079940C973D3D92F2AC0A64A9EF3507C73D5AF8D39C7F5557#)"
+    "(u #7764D724705A5BB528446AB9C428CE693C1C77E8CFEF78C487CE0B9C96B17513#))";
+
+/* Ground station state data */
 typedef struct {
-    uint8_t StreamId[2];   /* Stream ID / Message ID */
-    uint8_t Sequence[2];   /* Sequence Count */
-    uint8_t Length[2];     /* Length of packet in bytes (including header) */
-    uint8_t FunctionCode;  /* Command function code */
-    uint8_t Checksum;      /* Checksum for command verification */
-    uint8_t Payload[1024]; /* Payload data (variable length) */
-} CFE_SB_Msg_t;
-
-/* Structure for holding ground station state */
-typedef struct {
-    unsigned char AESKey[32];
-    size_t AESKeyLen;
-    gcry_sexp_t RSAPublicKey;
-    uint32_t MessageCounter;
-    uint32_t KeyRotationCounter;
-    int SocketFD;
-    struct sockaddr_in ServerAddr;
+    /* Network */
+    int          SocketFD;         /* Main socket for CI_LAB commands */
+    int          DataSocketFD;     /* Socket for encrypted data on dedicated port */
+    struct sockaddr_in ServerAddr; /* Main cFS address */
+    struct sockaddr_in DataAddr;   /* Data port address */
+    
+    /* Message scheduling */
+    int          MessageInterval;  /* Time between messages (seconds) */
+    int          KeyRotInterval;   /* Time between key rotations (seconds) */
+    time_t       LastMsgTime;      /* Last message time */
+    time_t       LastKeyRotTime;   /* Last key rotation time */
+    
+    /* Encryption */
+    gcry_sexp_t  RSAPrivateKey;    /* RSA private key */
+    gcry_sexp_t  RSAPublicKey;     /* RSA public key (derived from private) */
+    unsigned char AESKey[AES_KEY_SIZE]; /* Current AES key */
+    unsigned int KeyCounter;       /* Count key rotations */
 } GroundStation_t;
 
+/* Global ground station data */
 GroundStation_t GroundStation;
 
-
 /* Function prototypes */
+void print_hex_dump(const char *title, const void *data, size_t len);
+int GroundStation_Init(const char *hostname, int port, int msg_interval, int key_interval);
+void GroundStation_Cleanup(void);
 int GroundStation_InitCrypto(void);
-int GroundStation_Connect(const char *hostname, int port);
-void GroundStation_Shutdown(void);
-int GroundStation_EncryptMessage(const char *plaintext, size_t plaintext_len, 
-                                unsigned char *ciphertext, size_t *ciphertext_len);
-int GroundStation_EncryptNewKey(unsigned char *new_key, size_t key_len, 
-                               unsigned char **encrypted_key, size_t *encrypted_len);
-void GroundStation_GenerateNewAESKey(void);
+void GroundStation_SendCommand(uint16_t command_code);
 void GroundStation_SendEncryptedMessage(const char *message);
 void GroundStation_SendKeyRotation(void);
-void GroundStation_SendNoOpCommand(void);
-void GroundStation_SendResetCommand(void);
-void GroundStation_SendMessage(uint16_t msgId, uint8_t cmdCode, void *payload, size_t payloadLen);
-void GroundStation_RunSimulation(int message_interval, int key_rotation_interval);
-void GroundStation_PrintHelp(void);
+void GroundStation_Run(void);
+void handle_signal(int signal);
+
+/* Signal handler for clean shutdown */
+void handle_signal(int signal) {
+    printf("\nReceived signal %d, shutting down...\n", signal);
+    keep_running = 0;
+}
 
 /* Main function */
-int main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
     char *hostname = DEFAULT_HOSTNAME;
     int port = DEFAULT_PORT;
-    int message_interval = 5;    /* seconds between messages */
-    int key_rotation_interval = 30; /* seconds between key rotations */
+    int message_interval = 5;
+    int key_rotation_interval = 30;
     int c;
     
-    printf("Ground Station Simulator for ENCRYPT_APP\n");
-    printf("----------------------------------------\n");
-    
-    /* Parse command line arguments */
+    /* Parse command line options */
     while ((c = getopt(argc, argv, "h:p:m:k:?")) != -1) {
         switch (c) {
             case 'h':
@@ -99,72 +106,148 @@ int main(int argc, char *argv[])
                 key_rotation_interval = atoi(optarg);
                 break;
             case '?':
-                GroundStation_PrintHelp();
+                printf("Usage: %s [-h hostname] [-p port] [-m msg_interval] [-k key_interval]\n", argv[0]);
+                printf("Options:\n");
+                printf("  -h  Hostname (default: %s)\n", DEFAULT_HOSTNAME);
+                printf("  -p  Port (default: %d)\n", DEFAULT_PORT);
+                printf("  -m  Message interval in seconds (default: 5)\n");
+                printf("  -k  Key rotation interval in seconds (default: 30)\n");
                 return 0;
             default:
                 fprintf(stderr, "Unknown option: %c\n", c);
-                GroundStation_PrintHelp();
                 return 1;
         }
     }
     
-    /* Initialize crypto operations */
+    printf("Ground Station Simulator for ENCRYPT_APP\n");
+    printf("----------------------------------------\n");
+    
+    /* Install signal handler for clean shutdown */
+    signal(SIGINT, handle_signal);
+    
+    /* Initialize the ground station */
+    if (GroundStation_Init(hostname, port, message_interval, key_rotation_interval) != 0) {
+        fprintf(stderr, "Failed to initialize ground station. Exiting.\n");
+        return 1;
+    }
+    
+    /* Initialize cryptographic operations */
     if (GroundStation_InitCrypto() != 0) {
         fprintf(stderr, "Failed to initialize crypto. Exiting.\n");
+        GroundStation_Cleanup();
         return 1;
     }
     
-    /* Initialize AES key (same initial key as in encrypt_app.c) */
-    unsigned char initialKey[32] = {
-        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 
-        0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
-        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 
-        0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F
-    };
+    /* Send initial NOOP to verify connection */
+    printf("GROUND STATION: Sending NO-OP command\n");
+    GroundStation_SendCommand(ENCRYPT_APP_NOOP_CC);
     
-    memcpy(GroundStation.AESKey, initialKey, 32);
-    GroundStation.AESKeyLen = 32;
-    GroundStation.MessageCounter = 0;
-    GroundStation.KeyRotationCounter = 0;
+    /* Run the ground station */
+    GroundStation_Run();
     
-    /* Connect to cFS UDP server */
-    if (GroundStation_Connect(hostname, port) != 0) {
-        fprintf(stderr, "Failed to connect to cFS. Exiting.\n");
-        return 1;
+    /* Clean up before exit */
+    GroundStation_Cleanup();
+    
+    printf("Ground station terminated.\n");
+    return 0;
+}
+
+/* Helper function to dump binary data */
+void print_hex_dump(const char *title, const void *data, size_t len) {
+    printf("%s (%zu bytes):\n", title, len);
+    const unsigned char *p = data;
+    for (size_t i = 0; i < len; i++) {
+        printf("%02X ", p[i]);
+        if ((i + 1) % 16 == 0 || i == len - 1)
+            printf("\n");
+    }
+}
+
+/* Initialize the ground station */
+int GroundStation_Init(const char *hostname, int port, int msg_interval, int key_interval) {
+    /* Initialize ground station state */
+    memset(&GroundStation, 0, sizeof(GroundStation));
+    GroundStation.MessageInterval = msg_interval;
+    GroundStation.KeyRotInterval = key_interval;
+    GroundStation.LastMsgTime = time(NULL);
+    GroundStation.LastKeyRotTime = time(NULL);
+    GroundStation.KeyCounter = 0;
+    
+    /* Create socket for commands (to CI_LAB) */
+    GroundStation.SocketFD = socket(AF_INET, SOCK_DGRAM, 0);
+    if (GroundStation.SocketFD < 0) {
+        perror("Socket creation failed");
+        return -1;
     }
     
-    printf("Connected to cFS at %s:%d\n", hostname, port);
-    printf("Message interval: %d seconds\n", message_interval);
-    printf("Key rotation interval: %d seconds\n", key_rotation_interval);
-    printf("Press Ctrl+C to exit\n\n");
+    /* Set up command address (CI_LAB) */
+    memset(&GroundStation.ServerAddr, 0, sizeof(GroundStation.ServerAddr));
+    GroundStation.ServerAddr.sin_family = AF_INET;
+    GroundStation.ServerAddr.sin_port = htons(port);
     
-    /* Run the simulation */
-    GroundStation_RunSimulation(message_interval, key_rotation_interval);
+    /* Create socket for encrypted data (direct to our app) */
+    GroundStation.DataSocketFD = socket(AF_INET, SOCK_DGRAM, 0);
+    if (GroundStation.DataSocketFD < 0) {
+        perror("Data socket creation failed");
+        close(GroundStation.SocketFD);
+        return -1;
+    }
     
-    /* Clean up */
-    GroundStation_Shutdown();
+    /* Set up data address (direct to ENCRYPT_APP) */
+    memset(&GroundStation.DataAddr, 0, sizeof(GroundStation.DataAddr));
+    GroundStation.DataAddr.sin_family = AF_INET;
+    GroundStation.DataAddr.sin_port = htons(ENCRYPTED_PORT);
+    
+    /* Convert hostname to IP */
+    if (inet_pton(AF_INET, hostname, &GroundStation.ServerAddr.sin_addr) <= 0) {
+        perror("Invalid address");
+        close(GroundStation.SocketFD);
+        close(GroundStation.DataSocketFD);
+        return -1;
+    }
+    
+    /* Use same IP for data socket */
+    memcpy(&GroundStation.DataAddr.sin_addr, &GroundStation.ServerAddr.sin_addr, 
+           sizeof(GroundStation.ServerAddr.sin_addr));
+    
+    /* Initialize AES key */
+    for (int i = 0; i < AES_KEY_SIZE; i++) {
+        GroundStation.AESKey[i] = i; /* Simple initial key pattern */
+    }
+    
+    printf("Ground station initialized with:\n");
+    printf("  Hostname: %s\n", hostname);
+    printf("  Command port: %d\n", port);
+    printf("  Data port: %d\n", ENCRYPTED_PORT);
+    printf("  Message interval: %d seconds\n", msg_interval);
+    printf("  Key rotation interval: %d seconds\n", key_interval);
     
     return 0;
 }
 
-/* Print help information */
-void GroundStation_PrintHelp(void)
-{
-    printf("Usage: ground_station [options]\n");
-    printf("Options:\n");
-    printf("  -h hostname    Set the cFS hostname (default: %s)\n", DEFAULT_HOSTNAME);
-    printf("  -p port        Set the cFS port (default: %d)\n", DEFAULT_PORT);
-    printf("  -m interval    Set message interval in seconds (default: 5)\n");
-    printf("  -k interval    Set key rotation interval in seconds (default: 30)\n");
-    printf("  -?             Show this help\n");
+/* Clean up resources */
+void GroundStation_Cleanup(void) {
+    /* Close sockets */
+    if (GroundStation.SocketFD >= 0) {
+        close(GroundStation.SocketFD);
+    }
+    
+    if (GroundStation.DataSocketFD >= 0) {
+        close(GroundStation.DataSocketFD);
+    }
+    
+    /* Release cryptographic resources */
+    if (GroundStation.RSAPrivateKey) {
+        gcry_sexp_release(GroundStation.RSAPrivateKey);
+    }
+    
+    if (GroundStation.RSAPublicKey) {
+        gcry_sexp_release(GroundStation.RSAPublicKey);
+    }
 }
 
 /* Initialize cryptographic operations */
-/* Remove the RSA_PUBLIC_KEY constant */
-/* And modify the GroundStation_InitCrypto function: */
-
-int GroundStation_InitCrypto(void)
-{
+int GroundStation_InitCrypto(void) {
     /* Initialize libgcrypt */
     if (!gcry_check_version("1.8.0")) {
         fprintf(stderr, "libgcrypt version mismatch\n");
@@ -177,41 +260,51 @@ int GroundStation_InitCrypto(void)
     /* Initialize the library */
     gcry_control(GCRYCTL_INITIALIZATION_FINISHED, 0);
     
-    /* Create RSA public key from components instead of string */
-    gcry_mpi_t n, e;
-    gcry_error_t err;
-    
-    /* Import the modulus (n) */
-    err = gcry_mpi_scan(&n, GCRYMPI_FMT_HEX, 
-        "00BA65A53C3A3C02A87679B5F86A9BE4E5AB38475709E8784B0F2C3C573219E609AACB0C6D5F550879AA1AA80961C48AB663930F6FAAD5F1860E39A7B1A58A543", 
-        0, NULL);
+    /* Convert RSA private key from string to S-expression */
+    gcry_error_t err = gcry_sexp_sscan(&GroundStation.RSAPrivateKey, 
+                                       NULL, 
+                                       RSA_PRIVATE_KEY, 
+                                       strlen(RSA_PRIVATE_KEY));
     if (err) {
-        fprintf(stderr, "Failed to create modulus MPI: %s/%s\n",
+        fprintf(stderr, "Failed to load RSA private key: %s/%s\n",
                gcry_strsource(err), gcry_strerror(err));
         return -1;
     }
     
-    /* Import the public exponent (e) */
-    err = gcry_mpi_scan(&e, GCRYMPI_FMT_HEX, "010001", 0, NULL);
-    if (err) {
-        gcry_mpi_release(n);
-        fprintf(stderr, "Failed to create exponent MPI: %s/%s\n",
-               gcry_strsource(err), gcry_strerror(err));
+    /* Extract the public key components from the private key */
+    gcry_sexp_t n = gcry_sexp_find_token(GroundStation.RSAPrivateKey, "n", 0);
+    gcry_sexp_t e = gcry_sexp_find_token(GroundStation.RSAPrivateKey, "e", 0);
+    
+    if (!n || !e) {
+        fprintf(stderr, "Failed to extract public key components\n");
+        if (n) gcry_sexp_release(n);
+        if (e) gcry_sexp_release(e);
         return -1;
     }
     
-    /* Create the S-expression */
+    /* Build the public key from the components */
     err = gcry_sexp_build(&GroundStation.RSAPublicKey, NULL,
-                        "(public-key (rsa (n %m) (e %m)))", n, e);
+                         "(public-key (rsa (n %S) (e %S)))", n, e);
     
-    /* Free the MPIs */
-    gcry_mpi_release(n);
-    gcry_mpi_release(e);
+    /* Release the components */
+    gcry_sexp_release(n);
+    gcry_sexp_release(e);
     
     if (err) {
-        fprintf(stderr, "Failed to build RSA public key: %s/%s\n",
+        fprintf(stderr, "Failed to build public key: %s/%s\n",
                gcry_strsource(err), gcry_strerror(err));
         return -1;
+    }
+    
+    /* Print confirmation */
+    char *pubkey_str;
+    size_t len;
+    len = gcry_sexp_sprint(GroundStation.RSAPublicKey, GCRYSEXP_FMT_ADVANCED, NULL, 0);
+    pubkey_str = malloc(len);
+    if (pubkey_str) {
+        gcry_sexp_sprint(GroundStation.RSAPublicKey, GCRYSEXP_FMT_ADVANCED, pubkey_str, len);
+        printf("Generated public key from private key:\n%s\n", pubkey_str);
+        free(pubkey_str);
     }
     
     /* Initialize random number generator */
@@ -220,241 +313,40 @@ int GroundStation_InitCrypto(void)
     return 0;
 }
 
-/* Connect to cFS via UDP socket */
-int GroundStation_Connect(const char *hostname, int port)
-{
-    /* Create UDP socket */
-    GroundStation.SocketFD = socket(AF_INET, SOCK_DGRAM, 0);
-    if (GroundStation.SocketFD < 0) {
-        perror("Cannot create socket");
-        return -1;
-    }
+/* Send a command to cFS (via CI_LAB) */
+void GroundStation_SendCommand(uint16_t command_code) {
+    /* Create a properly formatted CCSDS command packet for CI_LAB */
+    uint8_t cmd_packet[8] = {0};
     
-    /* Set up the server address structure */
-    memset(&GroundStation.ServerAddr, 0, sizeof(GroundStation.ServerAddr));
-    GroundStation.ServerAddr.sin_family = AF_INET;
-    GroundStation.ServerAddr.sin_port = htons(port);
-    if (inet_pton(AF_INET, hostname, &GroundStation.ServerAddr.sin_addr) <= 0) {
-        perror("Invalid address");
-        close(GroundStation.SocketFD);
-        return -1;
-    }
+    /* Primary header (6 bytes) */
+    cmd_packet[0] = 0x18;  /* Version (3 bits), Type (1 bit), Secondary Header Flag (1 bit), App ID (3 bits MSB) */
+    cmd_packet[1] = 0x82;  /* App ID (8 bits LSB) - ENCRYPT_APP_CMD_MID (0x1882) */
+    cmd_packet[2] = 0xC0;  /* Sequence flags (2 bits), Sequence count (6 bits MSB) */
+    cmd_packet[3] = 0x00;  /* Sequence count (8 bits LSB) */
+    cmd_packet[4] = 0x00;  /* Packet length MSB (length of secondary header + data - 1) */
+    cmd_packet[5] = 0x01;  /* Packet length LSB = 1 byte of data */
     
-    return 0;
-}
-
-/* Shutdown and cleanup */
-void GroundStation_Shutdown(void)
-{
-    if (GroundStation.SocketFD >= 0) {
-        close(GroundStation.SocketFD);
-    }
+    /* Secondary header / command code (2 bytes) */
+    cmd_packet[6] = command_code; /* Command code */
+    cmd_packet[7] = 0x00;         /* Checksum or reserved */
     
-    /* Release RSA key */
-    gcry_sexp_release(GroundStation.RSAPublicKey);
-    
-    printf("\nGround Station Simulator shutdown complete.\n");
-}
-
-/* Encrypt a message using AES-256 */
-int GroundStation_EncryptMessage(const char *plaintext, size_t plaintext_len, 
-                                unsigned char *ciphertext, size_t *ciphertext_len)
-{
-    gcry_cipher_hd_t cipher;
-    gcry_error_t err;
-    
-    /* Create a cipher handle */
-    err = gcry_cipher_open(&cipher, GCRY_CIPHER_AES256, GCRY_CIPHER_MODE_CBC, 0);
-    if (err) {
-        fprintf(stderr, "Failed to open cipher: %s/%s\n",
-               gcry_strsource(err), gcry_strerror(err));
-        return -1;
-    }
-    
-    /* Set key */
-    err = gcry_cipher_setkey(cipher, GroundStation.AESKey, GroundStation.AESKeyLen);
-    if (err) {
-        gcry_cipher_close(cipher);
-        fprintf(stderr, "Failed to set key: %s/%s\n",
-               gcry_strsource(err), gcry_strerror(err));
-        return -1;
-    }
-    
-    /* Generate a random IV (16 bytes for AES) */
-    unsigned char iv[16];
-    gcry_randomize(iv, sizeof(iv), GCRY_STRONG_RANDOM);
-    
-    /* Set IV */
-    err = gcry_cipher_setiv(cipher, iv, sizeof(iv));
-    if (err) {
-        gcry_cipher_close(cipher);
-        fprintf(stderr, "Failed to set IV: %s/%s\n",
-               gcry_strsource(err), gcry_strerror(err));
-        return -1;
-    }
-    
-    /* Calculate padding size (AES block size is 16 bytes) */
-    size_t padded_len = ((plaintext_len + 15) / 16) * 16; /* Ceiling to multiple of 16 */
-    unsigned char *padded_text = malloc(padded_len);
-    if (!padded_text) {
-        gcry_cipher_close(cipher);
-        return -1;
-    }
-    
-    /* Prepare padded data (simple zero padding) */
-    memset(padded_text, 0, padded_len);
-    memcpy(padded_text, plaintext, plaintext_len);
-    
-    /* Copy IV to the beginning of ciphertext */
-    memcpy(ciphertext, iv, sizeof(iv));
-    
-    /* Encrypt */
-    err = gcry_cipher_encrypt(cipher, ciphertext + sizeof(iv), padded_len, 
-                             padded_text, padded_len);
-    
-    free(padded_text);
-    gcry_cipher_close(cipher);
-    
-    if (err) {
-        fprintf(stderr, "Failed to encrypt: %s/%s\n",
-               gcry_strsource(err), gcry_strerror(err));
-        return -1;
-    }
-    
-    /* Set total ciphertext length (IV + encrypted data) */
-    *ciphertext_len = sizeof(iv) + padded_len;
-    
-    return 0;
-}
-
-/* Generate a new AES key */
-void GroundStation_GenerateNewAESKey(void)
-{
-    /* Generate a new 256-bit (32-byte) AES key */
-    gcry_randomize(GroundStation.AESKey, 32, GCRY_VERY_STRONG_RANDOM);
-    GroundStation.AESKeyLen = 32;
-    
-    printf("GROUND STATION: Generated new AES key #%d\n", 
-           GroundStation.KeyRotationCounter + 1);
-}
-
-/* Encrypt the new AES key using RSA */
-int GroundStation_EncryptNewKey(unsigned char *new_key, size_t key_len, 
-                               unsigned char **encrypted_key, size_t *encrypted_len)
-{
-    gcry_error_t err;
-    gcry_sexp_t key_sexp, enc_sexp;
-    gcry_mpi_t key_mpi;
-    
-    /* Convert key to MPI */
-    err = gcry_mpi_scan(&key_mpi, GCRYMPI_FMT_USG, new_key, key_len, NULL);
-    if (err) {
-        fprintf(stderr, "Failed to create MPI: %s/%s\n",
-               gcry_strsource(err), gcry_strerror(err));
-        return -1;
-    }
-    
-    /* Create S-expression for the key */
-    err = gcry_sexp_build(&key_sexp, NULL, "(data (value %m))", key_mpi);
-    gcry_mpi_release(key_mpi);
-    
-    if (err) {
-        fprintf(stderr, "Failed to create key S-exp: %s/%s\n",
-               gcry_strsource(err), gcry_strerror(err));
-        return -1;
-    }
-    
-    /* Encrypt with RSA public key */
-    err = gcry_pk_encrypt(&enc_sexp, key_sexp, GroundStation.RSAPublicKey);
-    gcry_sexp_release(key_sexp);
-    
-    if (err) {
-        fprintf(stderr, "Failed to encrypt key: %s/%s\n",
-               gcry_strsource(err), gcry_strerror(err));
-        return -1;
-    }
-    
-    /* Extract the encrypted data */
-    gcry_sexp_t data = gcry_sexp_find_token(enc_sexp, "a", 0);
-    gcry_mpi_t enc_mpi = gcry_sexp_nth_mpi(data, 1, GCRYMPI_FMT_USG);
-    
-    /* Convert to binary */
-    err = gcry_mpi_aprint(GCRYMPI_FMT_USG, encrypted_key, encrypted_len, enc_mpi);
-    
-    /* Clean up */
-    gcry_sexp_release(enc_sexp);
-    gcry_sexp_release(data);
-    gcry_mpi_release(enc_mpi);
-    
-    if (err) {
-        fprintf(stderr, "Failed to convert encrypted key: %s/%s\n",
-               gcry_strsource(err), gcry_strerror(err));
-        if (*encrypted_key) free(*encrypted_key);
-        return -1;
-    }
-    
-    return 0;
-}
-
-/* Send a message to cFS */
-void GroundStation_SendMessage(uint16_t msgId, uint8_t cmdCode, void *payload, size_t payloadLen)
-{
-    static uint16_t sequence = 0;
-    CFE_SB_Msg_t msg;
-    size_t totalLen;
-    
-    /* Clear the message structure */
-    memset(&msg, 0, sizeof(msg));
-    
-    /* Set up CCSDS header */
-    msg.StreamId[0] = (msgId >> 8) & 0xFF;  /* MSB of message ID */
-    msg.StreamId[1] = msgId & 0xFF;         /* LSB of message ID */
-    
-    /* Set sequence number */
-    msg.Sequence[0] = (sequence >> 8) & 0xFF;
-    msg.Sequence[1] = sequence & 0xFF;
-    sequence++;
-    
-    /* Set function code for commands */
-    msg.FunctionCode = cmdCode;
-    
-    /* Copy payload data if provided */
-    if (payload != NULL && payloadLen > 0) {
-        if (payloadLen > sizeof(msg.Payload)) {
-            fprintf(stderr, "Payload too large for message buffer\n");
-            return;
-        }
-        memcpy(msg.Payload, payload, payloadLen);
-    }
-    
-    /* Calculate total message length */
-    totalLen = CCSDS_PRI_HDR_SIZE + CCSDS_CMD_SEC_HDR_SIZE + payloadLen;
-    
-    /* Set length in header */
-    msg.Length[0] = (totalLen >> 8) & 0xFF;
-    msg.Length[1] = totalLen & 0xFF;
-    
-    /* Send the message to cFS via UDP */
-    if (sendto(GroundStation.SocketFD, &msg, totalLen, 0,
-              (struct sockaddr *)&GroundStation.ServerAddr,
-              sizeof(GroundStation.ServerAddr)) < 0) {
-        perror("sendto failed");
-    }
-}
-
-void GroundStation_SendEncryptedMessage(const char *message) 
-{
-    /* Debugging helper function */
-    void print_hex_dump(const char *title, const void *data, size_t len) {
-        printf("%s (%zu bytes):\n", title, len);
-        const unsigned char *p = data;
-        for (size_t i = 0; i < len; i++) {
-            printf("%02X ", p[i]);
-            if ((i + 1) % 16 == 0 || i == len - 1)
-                printf("\n");
+    /* Send the command via the CI_LAB port */
+    if (sendto(GroundStation.SocketFD, cmd_packet, sizeof(cmd_packet), 0,
+              (struct sockaddr*)&GroundStation.ServerAddr, sizeof(GroundStation.ServerAddr)) < 0) {
+        perror("Command sendto failed");
+    } else {
+        if (command_code == ENCRYPT_APP_NOOP_CC) {
+            printf("Sent NOOP command to cFS\n");
+        } else if (command_code == ENCRYPT_APP_RESET_CC) {
+            printf("Sent RESET command to cFS\n");
+        } else {
+            printf("Sent command %d to cFS\n", command_code);
         }
     }
+}
 
+/* Send an encrypted message via the direct data port */
+void GroundStation_SendEncryptedMessage(const char *message) {
     if (!message || strlen(message) == 0) {
         fprintf(stderr, "Empty message, not sending\n");
         return;
@@ -478,7 +370,7 @@ void GroundStation_SendEncryptedMessage(const char *message)
     }
     
     /* Set the key */
-    err = gcry_cipher_setkey(cipher, GroundStation.AESKey, sizeof(GroundStation.AESKey));
+    err = gcry_cipher_setkey(cipher, GroundStation.AESKey, AES_KEY_SIZE);
     if (err) {
         fprintf(stderr, "Failed to set key: %s/%s\n",
                gcry_strsource(err), gcry_strerror(err));
@@ -523,56 +415,14 @@ void GroundStation_SendEncryptedMessage(const char *message)
     /* Calculate the total size of the encrypted message (IV + encrypted data) */
     size_t encrypted_len = 16 + padded_len;
     
-    /* Create two packets: a command to CI_LAB and a data packet */
-    
-    /* 1. First send a small command packet to notify CI_LAB */
-    uint8_t cmd_packet[8] = {0};  /* CI_LAB expects 8-byte command */
-    cmd_packet[0] = 0x18;
-    cmd_packet[1] = 0x84;  /* ENCRYPT_APP_ENCRYPTED_MID (0x1884) */
-    cmd_packet[2] = 0xC0;
-    cmd_packet[3] = 0x00;
-    cmd_packet[4] = 0x00;
-    cmd_packet[5] = 0x01;  /* Length of 1 byte for command code */
-    cmd_packet[6] = 0x00;  /* Command code 0 (NOOP equivalent) */
-    cmd_packet[7] = 0x00;  /* Reserved/alignment */
-    
-    print_hex_dump("Sending command packet", cmd_packet, sizeof(cmd_packet));
-    
-    /* Send the command packet */
-    if (sendto(GroundStation.SocketFD, cmd_packet, sizeof(cmd_packet), 0,
-              (struct sockaddr *)&GroundStation.ServerAddr, 
-              sizeof(GroundStation.ServerAddr)) < 0) {
-        perror("sendto failed for command packet");
-    }
-    
-    /* 2. Then send the actual data packet with encrypted message */
-    /* Create primary header (6 bytes) */
-    uint8_t header[6] = {0};
-    header[0] = 0x18;
-    header[1] = 0x84;  /* ENCRYPT_APP_ENCRYPTED_MID (0x1884) */
-    header[2] = 0xC0;
-    header[3] = 0x00;
-    
-    uint16_t length = encrypted_len - 1;
-    header[4] = (length >> 8) & 0xFF;
-    header[5] = length & 0xFF;
-    
-    /* Wait a short time before sending data packet */
-    usleep(100000);  /* 100ms sleep */
-    
-    uint8_t data_packet[BUFFER_SIZE];
-    memcpy(data_packet, header, 6);
-    memcpy(data_packet + 6, ciphertext, encrypted_len);
-    
-    print_hex_dump("Sending data packet", data_packet, 6 + encrypted_len);
-    
-    /* Send the data packet */
-    if (sendto(GroundStation.SocketFD, data_packet, 6 + encrypted_len, 0,
-              (struct sockaddr *)&GroundStation.ServerAddr, 
-              sizeof(GroundStation.ServerAddr)) < 0) {
-        perror("sendto failed for data packet");
+    /* Send directly to the ENCRYPT_APP UDP port */
+    if (sendto(GroundStation.DataSocketFD, ciphertext, encrypted_len, 0,
+              (struct sockaddr*)&GroundStation.DataAddr, 
+              sizeof(GroundStation.DataAddr)) < 0) {
+        perror("Direct encrypted sendto failed");
     } else {
-        printf("Sent encrypted message to satellite: \"%s\"\n", message);
+        printf("Sent encrypted message directly to satellite: \"%s\"\n", message);
+        print_hex_dump("Sent data", ciphertext, encrypted_len);
     }
     
     /* Clean up */
@@ -580,89 +430,117 @@ void GroundStation_SendEncryptedMessage(const char *message)
     gcry_cipher_close(cipher);
 }
 
-/* Send a key rotation message to the satellite */
-void GroundStation_SendKeyRotation(void)
-{
+/* Send a key rotation message */
+void GroundStation_SendKeyRotation(void) {
     /* Generate a new AES key */
-    GroundStation_GenerateNewAESKey();
+    unsigned char new_key[AES_KEY_SIZE];
+    gcry_randomize(new_key, AES_KEY_SIZE, GCRY_STRONG_RANDOM);
     
-    /* Encrypt the new key with RSA */
-    unsigned char *encrypted_key = NULL;
-    size_t encrypted_len = 0;
-    
-    int status = GroundStation_EncryptNewKey(GroundStation.AESKey, GroundStation.AESKeyLen, 
-                                            &encrypted_key, &encrypted_len);
-    if (status != 0) {
-        fprintf(stderr, "Failed to encrypt new AES key\n");
+    /* Create the MPI from the new key */
+    gcry_mpi_t key_mpi;
+    gcry_error_t err = gcry_mpi_scan(&key_mpi, GCRYMPI_FMT_USG, new_key, AES_KEY_SIZE, NULL);
+    if (err) {
+        fprintf(stderr, "Failed to create MPI: %s/%s\n",
+               gcry_strsource(err), gcry_strerror(err));
         return;
     }
     
-    printf("GROUND STATION: Sending encrypted new AES key #%d\n", 
-           GroundStation.KeyRotationCounter + 1);
+    /* Create S-expression for the plaintext data */
+    gcry_sexp_t plain_data;
+    err = gcry_sexp_build(&plain_data, NULL, "(data (flags pkcs1) (value %m))", key_mpi);
+    gcry_mpi_release(key_mpi);
     
-    /* Send key rotation message to cFS */
-    GroundStation_SendMessage(ENCRYPT_APP_KEY_ROT_MID, 0, encrypted_key, encrypted_len);
+    if (err) {
+        fprintf(stderr, "Failed to create plaintext S-exp: %s/%s\n",
+               gcry_strsource(err), gcry_strerror(err));
+        return;
+    }
     
-    /* Free the encrypted key buffer */
-    free(encrypted_key);
+    /* Encrypt with the public key */
+    gcry_sexp_t cipher_data;
+    err = gcry_pk_encrypt(&cipher_data, plain_data, GroundStation.RSAPublicKey);
+    gcry_sexp_release(plain_data);
     
-    GroundStation.KeyRotationCounter++;
-}
-
-/* Send a NO-OP command to the satellite */
-void GroundStation_SendNoOpCommand(void)
-{
-    printf("GROUND STATION: Sending NO-OP command\n");
-    GroundStation_SendMessage(ENCRYPT_APP_CMD_MID, ENCRYPT_APP_NOOP_CC, NULL, 0);
-}
-
-/* Send a RESET command to the satellite */
-void GroundStation_SendResetCommand(void)
-{
-    printf("GROUND STATION: Sending RESET command\n");
-    GroundStation_SendMessage(ENCRYPT_APP_CMD_MID, ENCRYPT_APP_RESET_CC, NULL, 0);
-}
-
-/* Run the ground station simulation */
-void GroundStation_RunSimulation(int message_interval, int key_rotation_interval)
-{
-    time_t start_time, current_time;
-    uint32_t run_seconds = 0;
-    char message[256];
+    if (err) {
+        fprintf(stderr, "RSA encryption failed: %s/%s\n",
+               gcry_strsource(err), gcry_strerror(err));
+        return;
+    }
     
-    /* Send an initial NO-OP command */
-    GroundStation_SendNoOpCommand();
+    /* Extract the encrypted data */
+    gcry_sexp_t a_part = gcry_sexp_find_token(cipher_data, "a", 0);
+    if (!a_part) {
+        fprintf(stderr, "Failed to extract encrypted data\n");
+        gcry_sexp_release(cipher_data);
+        return;
+    }
     
-    /* Start the simulation */
-    time(&start_time);
+    /* Get the MPI for the encrypted data */
+    gcry_mpi_t cipher_mpi = gcry_sexp_nth_mpi(a_part, 1, GCRYMPI_FMT_USG);
+    gcry_sexp_release(a_part);
+    gcry_sexp_release(cipher_data);
     
-    while (1) {
-        time(&current_time);
-        run_seconds = (uint32_t)difftime(current_time, start_time);
+    if (!cipher_mpi) {
+        fprintf(stderr, "Failed to extract MPI from encrypted data\n");
+        return;
+    }
+    
+    /* Convert MPI to binary */
+    unsigned char *key_data;
+    size_t key_len;
+    err = gcry_mpi_aprint(GCRYMPI_FMT_USG, &key_data, &key_len, cipher_mpi);
+    gcry_mpi_release(cipher_mpi);
+    
+    if (err) {
+        fprintf(stderr, "Failed to convert MPI to binary: %s/%s\n",
+               gcry_strsource(err), gcry_strerror(err));
+        return;
+    }
+    
+    /* Send the encrypted key directly to the ENCRYPT_APP UDP port */
+    if (sendto(GroundStation.DataSocketFD, key_data, key_len, 0,
+              (struct sockaddr*)&GroundStation.DataAddr, 
+              sizeof(GroundStation.DataAddr)) < 0) {
+        perror("Direct key rotation sendto failed");
+    } else {
+        printf("Sent key rotation #%u directly to satellite\n", ++GroundStation.KeyCounter);
+        print_hex_dump("Sent key data", key_data, key_len);
         
-        /* Check if it's time for key rotation */
-        if (run_seconds > 0 && (run_seconds % key_rotation_interval) == 0) {
-            GroundStation_SendKeyRotation();
-            sleep(1); /* Ensure we don't trigger rotation again in the same second */
-            continue;
-        }
+        /* Store the new key for future messages */
+        memcpy(GroundStation.AESKey, new_key, AES_KEY_SIZE);
+    }
+    
+    /* Free the allocated memory */
+    free(key_data);
+}
+
+/* Run the ground station until terminated */
+void GroundStation_Run(void) {
+    time_t current_time;
+    
+    printf("Ground station running. Press Ctrl+C to exit.\n");
+    
+    /* Main loop */
+    while (keep_running) {
+        current_time = time(NULL);
         
         /* Check if it's time to send a message */
-        if (run_seconds > 0 && (run_seconds % message_interval) == 0) {
-            /* Prepare message */
-            if (GroundStation.KeyRotationCounter == 0) {
-                strcpy(message, "Hello from Ground Station");
-            } else {
-                snprintf(message, sizeof(message), "Hello from Ground Station (Key #%d)",
-                         GroundStation.KeyRotationCounter);
-            }
+        if (difftime(current_time, GroundStation.LastMsgTime) >= GroundStation.MessageInterval) {
+            char message[256];
+            sprintf(message, "Hello from Ground Station - Message %u", 
+                   GroundStation.KeyCounter);
             
-            /* Send the encrypted message */
             GroundStation_SendEncryptedMessage(message);
-            sleep(1); /* Ensure we don't send multiple messages in the same second */
+            GroundStation.LastMsgTime = current_time;
         }
         
-        /* Small delay to prevent CPU spinning */
-        usleep(100000); /* 100ms */
+        /* Check if it's time to rotate the key */
+        if (difftime(current_time, GroundStation.LastKeyRotTime) >= GroundStation.KeyRotInterval) {
+            GroundStation_SendKeyRotation();
+            GroundStation.LastKeyRotTime = current_time;
+        }
+        
+        /* Sleep for a short time to avoid busy waiting */
+        usleep(100000);  /* 100ms sleep */
     }
 }
