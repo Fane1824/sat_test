@@ -4,6 +4,8 @@
 #include "encrypt_app.h"
 #include "encrypt_app_events.h"
 #include "encrypt_app_version.h"
+#include <string.h>
+#include <gcrypt.h>
 
 /*
 ** Global Data
@@ -28,16 +30,7 @@ void ENCRYPT_APP_Main(void)
     CFE_SB_Buffer_t *SBBufPtr;
 
     /* Register the app with Executive Services */
-    CFE_ES_Main_t MainParams;
-    memset(&MainParams, 0, sizeof(MainParams));
-    
-    status = CFE_ES_RegisterApp(&MainParams);
-
-    if (status != CFE_SUCCESS)
-    {
-        CFE_ES_WriteToSysLog("ENCRYPT_APP: Error registering app: 0x%08X\n", (unsigned int)status);
-        return;
-    }
+    CFE_ES_RegisterApp();
 
     /* Initialize the application */
     status = ENCRYPT_APP_Init();
@@ -283,7 +276,7 @@ void ENCRYPT_APP_ProcessCommandPacket(CFE_SB_Buffer_t *BufPtr)
         /* Get the message payload */
         uint16_t UserDataSize = 0;
         uint8_t *UserData = CFE_SB_GetUserData(&BufPtr->Msg);
-        CFE_MSG_GetUserDataLength(&BufPtr->Msg, &UserDataSize);
+        CFE_SB_GetUserDataLength(&BufPtr->Msg, &UserDataSize);
         
         /* Determine payload size */
         size_t PayloadSize = UserDataSize;
@@ -314,7 +307,7 @@ void ENCRYPT_APP_ProcessCommandPacket(CFE_SB_Buffer_t *BufPtr)
         /* Get the message payload */
         uint16_t UserDataSize = 0;
         uint8_t *UserData = CFE_SB_GetUserData(&BufPtr->Msg);
-        CFE_MSG_GetUserDataLength(&BufPtr->Msg, &UserDataSize);
+        CFE_SB_GetUserDataLength(&BufPtr->Msg, &UserDataSize);
         
         /* Determine payload size */
         size_t PayloadSize = UserDataSize;

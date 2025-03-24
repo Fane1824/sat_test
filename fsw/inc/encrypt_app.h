@@ -12,6 +12,10 @@
 #include "cfe_msg.h"
 #include "cfe_time.h"
 
+/* Include gcrypt header */
+#include <gcrypt.h>
+#include <string.h>
+
 /*
 ** ENCRYPT App Macro Definitions
 */
