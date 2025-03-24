@@ -485,60 +485,121 @@ void GroundStation_SendMessage(uint16_t msgId, uint8_t cmdCode, void *payload,
     }
 }
 
-/* Add a function to send a simpler encrypted message via CI_LAB */
-void GroundStation_SendSimpleTestMessage(void)
+void GroundStation_SendEncryptedMessage(const char *message) 
 {
-    printf("GROUND STATION: Sending simple test message via CI_LAB\n");
-    
-    /* Simple text to encrypt */
-    const char *message = "Test";
-    
-    /* Encrypt it with our current key */
-    unsigned char iv[16] = {0}; // Simple IV with zeros
-    unsigned char ciphertext[32] = {0}; // Small buffer
-    
-    /* Open cipher */
-    gcry_cipher_hd_t cipher;
-    gcry_cipher_open(&cipher, GCRY_CIPHER_AES256, GCRY_CIPHER_MODE_CBC, 0);
-    gcry_cipher_setkey(cipher, GroundStation.AESKey, 32);
-    gcry_cipher_setiv(cipher, iv, 16);
-    
-    /* Encrypt the short message */
-    unsigned char plaintext[16] = {0};
-    memcpy(plaintext, message, strlen(message));
-    gcry_cipher_encrypt(cipher, ciphertext, 16, plaintext, 16);
-    gcry_cipher_close(cipher);
-    
-    /* Create a small payload with IV and ciphertext */
-    unsigned char payload[32] = {0};
-    memcpy(payload, iv, 16);
-    memcpy(payload + 16, ciphertext, 16);
-    
-    /* CCSDS Command Packet for CI_LAB - make it small */
-    uint8_t cmd_packet[8 + 32] = {0};  /* CI_LAB packet with payload */
-    cmd_packet[0] = 0x18;  /* Version (3 bits = 1), Type (1 bit = 1 for cmd), Secondary Header Flag (1 bit = 1), App ID (3 bits MSB) */
-    cmd_packet[1] = 0x84;  /* App ID (8 bits LSB) - ENCRYPT_APP_ENCRYPTED_MID (0x1884) */
-    cmd_packet[2] = 0xC0;  /* Sequence flags (2 bits), Sequence count (6 bits MSB) */
-    cmd_packet[3] = 0x00;  /* Sequence count (8 bits LSB) */
-    cmd_packet[4] = 0x00;  /* Packet length MSB */
-    cmd_packet[5] = 0x1F;  /* Packet length LSB = 31 bytes (32-1) */
-    cmd_packet[6] = 0x00;  /* Command code (arbitrary) */
-    cmd_packet[7] = 0x00;  /* Checksum or reserved */
-    
-    /* Copy encrypted data */
-    memcpy(cmd_packet + 8, payload, 32);
-    
-    /* Send command to CI_LAB */
-    if (sendto(GroundStation.CmdSocketFD, cmd_packet, sizeof(cmd_packet), 0,
-              (struct sockaddr *)&GroundStation.CmdAddr, 
-              sizeof(GroundStation.CmdAddr)) < 0) {
-        perror("sendto failed for simple test message");
-    } else {
-        printf("Sent simple test message via CI_LAB\n");
+    /* Debugging helper function */
+    void print_hex_dump(const char *title, const void *data, size_t len) {
+        printf("%s (%zu bytes):\n", title, len);
+        const unsigned char *p = data;
+        for (size_t i = 0; i < len; i++) {
+            printf("%02X ", p[i]);
+            if ((i + 1) % 16 == 0 || i == len - 1)
+                printf("\n");
+        }
     }
-}
 
-/* Call this function in your main simulation loop */
+    if (!message || strlen(message) == 0) {
+        fprintf(stderr, "Empty message, not sending\n");
+        return;
+    }
+    
+    /* Generate a random IV for this message */
+    unsigned char iv[16] = {0};
+    gcry_randomize(iv, 16, GCRY_STRONG_RANDOM);
+    
+    /* Create a buffer for the ciphertext (IV + encrypted data) */
+    unsigned char ciphertext[BUFFER_SIZE];
+    memcpy(ciphertext, iv, 16); /* Copy the IV to the beginning of the ciphertext */
+    
+    /* Open a cipher handle */
+    gcry_cipher_hd_t cipher;
+    gcry_error_t err = gcry_cipher_open(&cipher, GCRY_CIPHER_AES256, GCRY_CIPHER_MODE_CBC, 0);
+    if (err) {
+        fprintf(stderr, "Failed to open cipher: %s/%s\n",
+               gcry_strsource(err), gcry_strerror(err));
+        return;
+    }
+    
+    /* Set the key */
+    err = gcry_cipher_setkey(cipher, GroundStation.AESKey, sizeof(GroundStation.AESKey));
+    if (err) {
+        fprintf(stderr, "Failed to set key: %s/%s\n",
+               gcry_strsource(err), gcry_strerror(err));
+        gcry_cipher_close(cipher);
+        return;
+    }
+    
+    /* Set the IV */
+    err = gcry_cipher_setiv(cipher, iv, 16);
+    if (err) {
+        fprintf(stderr, "Failed to set IV: %s/%s\n",
+               gcry_strsource(err), gcry_strerror(err));
+        gcry_cipher_close(cipher);
+        return;
+    }
+    
+    /* Calculate the padded message length */
+    size_t msg_len = strlen(message);
+    size_t padded_len = ((msg_len + 15) / 16) * 16; /* Round up to multiple of 16 */
+    
+    /* Create a buffer for the plaintext with padding */
+    unsigned char *plaintext = (unsigned char *)calloc(padded_len, 1);
+    if (!plaintext) {
+        fprintf(stderr, "Memory allocation error\n");
+        gcry_cipher_close(cipher);
+        return;
+    }
+    
+    /* Copy the message to the plaintext buffer and pad with zeros */
+    memcpy(plaintext, message, msg_len);
+    
+    /* Encrypt the message */
+    err = gcry_cipher_encrypt(cipher, ciphertext + 16, padded_len, plaintext, padded_len);
+    if (err) {
+        fprintf(stderr, "Encryption failed: %s/%s\n",
+               gcry_strsource(err), gcry_strerror(err));
+        free(plaintext);
+        gcry_cipher_close(cipher);
+        return;
+    }
+    
+    /* Calculate the total size of the encrypted message (IV + encrypted data) */
+    size_t encrypted_len = 16 + padded_len;
+    
+    /* Create telemetry packet for TO_LAB with encrypted data */
+    /* CCSDS Telemetry Primary Header (6 bytes) */
+    uint8_t tlm_header[6] = {0};
+    tlm_header[0] = 0x08;  /* Version (3 bits = 0), Type (1 bit = 0 for tlm), Sec Hdr Flag (1 bit = 0), App ID (3 bits MSB) */
+    tlm_header[1] = 0x84;  /* App ID (8 bits LSB) - ENCRYPT_APP_ENCRYPTED_MID (0x0884 for telemetry) */
+    tlm_header[2] = 0xC0;  /* Sequence flags (2 bits), Sequence count (6 bits MSB) */
+    tlm_header[3] = 0x00;  /* Sequence count (8 bits LSB) */
+    
+    uint16_t length = encrypted_len - 1;  /* CCSDS length is total bytes - 1 */
+    tlm_header[4] = (length >> 8) & 0xFF;
+    tlm_header[5] = length & 0xFF;
+    
+    uint8_t tlm_packet[BUFFER_SIZE];
+    memcpy(tlm_packet, tlm_header, 6);
+    memcpy(tlm_packet + 6, ciphertext, encrypted_len);
+    
+    print_hex_dump("Sending telemetry packet", tlm_packet, 6 + encrypted_len);
+    
+    /* Send the telemetry packet to TO_LAB */
+    if (sendto(GroundStation.TlmSocketFD, tlm_packet, 6 + encrypted_len, 0,
+              (struct sockaddr *)&GroundStation.TlmAddr, 
+              sizeof(GroundStation.TlmAddr)) < 0) {
+        perror("sendto failed for encrypted message");
+    } else {
+        printf("Sent encrypted message to TO_LAB (port %d): \"%s\"\n", 
+            ntohs(GroundStation.TlmAddr.sin_port), message);
+        printf("Packet size: %zu bytes\n", 6 + encrypted_len);
+        GroundStation.MessageCounter++;
+    }
+    
+    /* Clean up */
+    free(plaintext);
+    gcry_cipher_close(cipher);
+}
 
 /* Send a key rotation message to the satellite */
 void GroundStation_SendKeyRotation(void)
