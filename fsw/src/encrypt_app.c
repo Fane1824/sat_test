@@ -274,9 +274,8 @@ void ENCRYPT_APP_ProcessCommandPacket(CFE_SB_Buffer_t *BufPtr)
         CFE_MSG_GetSize(&BufPtr->Msg, &MsgSize);
         
         /* Get the message payload */
-        uint16_t UserDataSize = 0;
         uint8_t *UserData = CFE_SB_GetUserData(&BufPtr->Msg);
-        CFE_SB_GetUserDataLength(&BufPtr->Msg, &UserDataSize);
+        uint16_t UserDataSize = CFE_SB_GetUserDataLength(&BufPtr->Msg);
         
         /* Determine payload size */
         size_t PayloadSize = UserDataSize;
@@ -305,9 +304,8 @@ void ENCRYPT_APP_ProcessCommandPacket(CFE_SB_Buffer_t *BufPtr)
         CFE_MSG_GetSize(&BufPtr->Msg, &MsgSize);
         
         /* Get the message payload */
-        uint16_t UserDataSize = 0;
         uint8_t *UserData = CFE_SB_GetUserData(&BufPtr->Msg);
-        CFE_SB_GetUserDataLength(&BufPtr->Msg, &UserDataSize);
+        uint16_t UserDataSize = CFE_SB_GetUserDataLength(&BufPtr->Msg);
         
         /* Determine payload size */
         size_t PayloadSize = UserDataSize;
