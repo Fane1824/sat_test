@@ -1,0 +1,120 @@
+#ifndef ENCRYPT_APP_H
+#define ENCRYPT_APP_H
+
+/*
+** Required header files
+*/
+#include "common_types.h"
+#include "cfe_error.h"
+#include "cfe_evs.h"
+#include "cfe_sb.h"
+#include "cfe_es.h"
+#include "cfe_msg.h"
+
+#include <string.h>
+#include <gcrypt.h>
+
+/*
+** ENCRYPT App Macro Definitions
+*/
+#define ENCRYPT_APP_PIPE_DEPTH     32
+#define ENCRYPT_APP_PIPE_NAME      "ENCRYPT_APP_PIPE"
+
+/* Default Message IDs for commands and telemetry */
+#define ENCRYPT_APP_CMD_MID            CFE_MISSION_CMD_MID_BASE + 0x12  /* 0x1812 */
+#define ENCRYPT_APP_SEND_HK_MID        CFE_MISSION_CMD_MID_BASE + 0x13  /* 0x1813 */
+#define ENCRYPT_APP_ENCRYPTED_MID      CFE_MISSION_CMD_MID_BASE + 0x14  /* 0x1814 */
+#define ENCRYPT_APP_KEY_ROT_MID        CFE_MISSION_CMD_MID_BASE + 0x15  /* 0x1815 */
+#define ENCRYPT_APP_HK_TLM_MID         CFE_MISSION_TLM_MID_BASE + 0x12  /* 0x0812 */
+
+/*
+** Type definitions
+*/
+typedef struct
+{
+    /* CFE Event Table */
+    CFE_EVS_BinFilter_t  EventFilters[8];
+    
+    /* CFE Software Bus interfaces */
+    CFE_SB_PipeId_t  CommandPipe;
+    
+    /* Task runtime info */
+    uint32  RunStatus;
+    
+    /* Counters */
+    uint32  MsgCounter;
+    uint32  KeyRotationCounter;
+    uint32  CommandCounter;
+    uint32  CommandErrorCounter;
+    
+    /* Housekeeping telemetry */
+    uint8   HkTlm[sizeof(CFE_SB_Buffer_t)];
+    
+    /* RSA Keys */
+    gcry_sexp_t  RSAPrivateKey;
+    
+    /* AES Key */
+    unsigned char  AESKey[32]; /* AES-256 key (32 bytes) */
+    size_t         AESKeyLen;
+    
+    /* Buffer for decrypted messages */
+    char  DecryptedMsg[256];
+    
+} ENCRYPT_APP_Data_t;
+
+/*
+** Exported Functions
+*/
+/**
+ * \brief ENCRYPT APP Main Function
+ */
+void ENCRYPT_APP_Main(void);
+
+/**
+ * \brief Initialize the Encrypt App
+ */
+CFE_Status_t ENCRYPT_APP_Init(void);
+
+/**
+ * \brief Decrypt an AES encrypted message
+ */
+int ENCRYPT_APP_DecryptMessage(const unsigned char *ciphertext, size_t ciphertext_len, 
+                               unsigned char *plaintext);
+
+/**
+ * \brief Process a key rotation message
+ */
+int ENCRYPT_APP_ProcessKeyRotation(const unsigned char *encrypted_key, size_t key_len);
+
+/**
+ * \brief Initialize cryptographic operations
+ */
+int ENCRYPT_APP_InitCrypto(void);
+
+/**
+ * \brief Process incoming commands and messages
+ */
+void ENCRYPT_APP_ProcessCommandPacket(CFE_SB_Buffer_t *BufPtr);
+
+/**
+ * \brief Send housekeeping telemetry
+ */
+void ENCRYPT_APP_ReportHousekeeping(void);
+
+/*
+** The following is an internal structure used for the encrypted messages table.
+*/
+typedef struct
+{
+    uint8  Payload[1024];  /* Message payload (encrypted data) */
+} ENCRYPT_Message_t;
+
+/*
+** The following is an internal structure used for the key rotation table.
+*/
+typedef struct
+{
+    uint8  EncryptedKey[512];  /* RSA-encrypted AES key */
+} ENCRYPT_KeyRotation_t;
+
+#endif /* ENCRYPT_APP_H */
