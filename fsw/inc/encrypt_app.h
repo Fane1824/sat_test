@@ -15,6 +15,9 @@
 /* Include gcrypt header */
 #include <gcrypt.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 /*
 ** ENCRYPT App Macro Definitions
@@ -81,6 +84,10 @@ typedef struct
     /* Buffer for decrypted messages */
     char  DecryptedMsg[256];
     
+    /* UDP socket for direct communication */
+    int                DirectSocketFD;
+    struct sockaddr_in DirectAddr;
+    
 } ENCRYPT_APP_Data_t;
 
 /*
@@ -121,6 +128,11 @@ void ENCRYPT_APP_ProcessCommandPacket(CFE_SB_Buffer_t *BufPtr);
  * \brief Send housekeeping telemetry
  */
 void ENCRYPT_APP_ReportHousekeeping(void);
+
+/**
+ * \brief Check for incoming UDP messages
+ */
+void ENCRYPT_APP_CheckUdpMessages(void);
 
 /*
 ** The following is an internal structure used for the encrypted messages table.

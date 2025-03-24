@@ -67,8 +67,8 @@ void ENCRYPT_APP_Main(void)
     }
 
     /* Close UDP socket before exiting */
-    if (ENCRYPT_APP_Data.UdpSocket >= 0) {
-        close(ENCRYPT_APP_Data.UdpSocket);
+    if (ENCRYPT_APP_Data.DirectSocketFD >= 0) {
+        close(ENCRYPT_APP_Data.DirectSocketFD);
     }
 
     /* Exit the application */
@@ -187,8 +187,8 @@ CFE_Status_t ENCRYPT_APP_Init(void)
     ENCRYPT_APP_Data.AESKeyLen = 32;
 
     /* Set up UDP socket for direct communication */
-    ENCRYPT_APP_Data.UdpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (ENCRYPT_APP_Data.UdpSocket < 0) {
+    ENCRYPT_APP_Data.DirectSocketFD = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (ENCRYPT_APP_Data.DirectSocketFD < 0) {
         OS_printf("ENCRYPT_APP: Failed to create UDP socket\n");
         CFE_EVS_SendEvent(ENCRYPT_APP_CRYPTO_INIT_ERR_EID, CFE_EVS_EventType_ERROR,
                          "ENCRYPT_APP: Failed to create UDP socket");
@@ -196,23 +196,23 @@ CFE_Status_t ENCRYPT_APP_Init(void)
     }
     
     /* Set socket to non-blocking */
-    int flags = fcntl(ENCRYPT_APP_Data.UdpSocket, F_GETFL, 0);
-    fcntl(ENCRYPT_APP_Data.UdpSocket, F_SETFL, flags | O_NONBLOCK);
+    int flags = fcntl(ENCRYPT_APP_Data.DirectSocketFD, F_GETFL, 0);
+    fcntl(ENCRYPT_APP_Data.DirectSocketFD, F_SETFL, flags | O_NONBLOCK);
     
     /* Set up UDP address */
-    memset(&ENCRYPT_APP_Data.UdpAddr, 0, sizeof(ENCRYPT_APP_Data.UdpAddr));
-    ENCRYPT_APP_Data.UdpAddr.sin_family = AF_INET;
-    ENCRYPT_APP_Data.UdpAddr.sin_addr.s_addr = htonl(INADDR_ANY);
-    ENCRYPT_APP_Data.UdpAddr.sin_port = htons(1236);  /* Listen on port 1236 */
+    memset(&ENCRYPT_APP_Data.DirectAddr, 0, sizeof(ENCRYPT_APP_Data.DirectAddr));
+    ENCRYPT_APP_Data.DirectAddr.sin_family = AF_INET;
+    ENCRYPT_APP_Data.DirectAddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    ENCRYPT_APP_Data.DirectAddr.sin_port = htons(1236);  /* Listen on port 1236 */
     
     /* Bind socket to address */
-    if (bind(ENCRYPT_APP_Data.UdpSocket, 
-            (struct sockaddr*)&ENCRYPT_APP_Data.UdpAddr, 
-            sizeof(ENCRYPT_APP_Data.UdpAddr)) < 0) {
+    if (bind(ENCRYPT_APP_Data.DirectSocketFD, 
+            (struct sockaddr*)&ENCRYPT_APP_Data.DirectAddr, 
+            sizeof(ENCRYPT_APP_Data.DirectAddr)) < 0) {
         OS_printf("ENCRYPT_APP: Failed to bind UDP socket\n");
         CFE_EVS_SendEvent(ENCRYPT_APP_CRYPTO_INIT_ERR_EID, CFE_EVS_EventType_ERROR,
                          "ENCRYPT_APP: Failed to bind UDP socket");
-        close(ENCRYPT_APP_Data.UdpSocket);
+        close(ENCRYPT_APP_Data.DirectSocketFD);
         return CFE_STATUS_EXTERNAL_RESOURCE_FAIL;
     }
     
@@ -540,7 +540,7 @@ void ENCRYPT_APP_CheckUdpMessages(void)
     int nbytes;
     
     /* Check if there's data on the UDP socket */
-    nbytes = recvfrom(ENCRYPT_APP_Data.UdpSocket, buffer, sizeof(buffer), 0,
+    nbytes = recvfrom(ENCRYPT_APP_Data.DirectSocketFD, buffer, sizeof(buffer), 0,
                      (struct sockaddr*)&sender_addr, &sender_len);
     
     if (nbytes > 0) {
